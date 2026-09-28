@@ -357,21 +357,24 @@
       });
   });
 
+  function newGroup(members, suggestion) {
+    return {
+      members: members,
+      suggestion: suggestion || null,
+      title: suggestion && suggestion.title ? suggestion.title : "",
+      categoryId: suggestion && suggestion.category_id ? String(suggestion.category_id) : "",
+      actual: undefined,
+      invoice: undefined
+    };
+  }
+
   function buildState(data) {
     paired = true;
     var byIndex = {};
     cards.forEach(function (card) { byIndex[card._index] = card; });
     var suggestions = (data.suggestions && data.suggestions.suggestions) || [];
     groups = (data.groups || []).map(function (ids, i) {
-      var suggestion = suggestions[i] || null;
-      return {
-        members: ids.map(function (id) { return byIndex[id]; }).filter(Boolean),
-        suggestion: suggestion,
-        title: suggestion && suggestion.title ? suggestion.title : "",
-        categoryId: suggestion && suggestion.category_id ? String(suggestion.category_id) : "",
-        actual: undefined,
-        invoice: undefined
-      };
+      return newGroup(ids.map(function (id) { return byIndex[id]; }).filter(Boolean), suggestions[i] || null);
     });
     pendingGroups = (data.pending || []).map(function (ids) {
       return ids.map(function (id) { return byIndex[id]; }).filter(Boolean);
@@ -576,16 +579,17 @@
         pendingGroups.splice(pendingGroups.indexOf(members), 1);
         renderGroups();
       });
-      if (groups.length) row.appendChild(select);
-      row.appendChild(merge);
+      if (groups.length) {  // 无目标组时并入按钮随 select 一并隐藏，避免可见但空转
+        row.appendChild(select);
+        row.appendChild(merge);
+      }
       var promote = document.createElement("button");
       promote.type = "button";
       promote.className = "small secondary";
       promote.textContent = "设为新组";
       promote.addEventListener("click", function () {
         // 整批都进待确认时 groups 为空，提供成组出口避免死路
-        groups.push({members: members.slice(), suggestion: null, title: "", categoryId: "",
-                      actual: undefined, invoice: undefined});
+        groups.push(newGroup(members.slice()));
         pendingGroups.splice(pendingGroups.indexOf(members), 1);
         renderGroups();
       });
@@ -642,8 +646,7 @@
         create.textContent = "新建组";
         create.addEventListener("click", function () {
           // 一个组都没有时给出成组出口，避免整批未配对死路
-          groups.push({members: [entry.card], suggestion: null, title: "", categoryId: "",
-                       actual: undefined, invoice: undefined});
+          groups.push(newGroup([entry.card]));
           var stateIndex = unmatched.indexOf(entry);
           if (stateIndex >= 0) unmatched.splice(stateIndex, 1);
           renderGroups();
