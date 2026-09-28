@@ -429,3 +429,53 @@ class AuditLogTests(SubmissionTestCase):
         self.assertContains(response, "操作记录")
         self.assertContains(response, "明细：硬盘")
         self.assertContains(response, "创建")
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ItemDetailTests(SubmissionTestCase):
+    """看板条目详情模态浮层（issue #13）：所有登录用户可见，编辑入口限本人/管理员。"""
+
+    def test_board_renders_detail_dialog_with_images(self):
+        item = self._create_item(self.student)
+        invoice = item.attachments.get(kind=Attachment.KIND_INVOICE)
+        payment = item.attachments.get(kind=Attachment.KIND_PAYMENT)
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertContains(response, f'id="item-detail-{item.pk}"')
+        self.assertContains(response, f'src="/items/attachments/{invoice.pk}/file/"')
+        self.assertContains(response, f'src="/items/attachments/{payment.pk}/file/"')
+        self.assertContains(response, "<h3>发票</h3>")
+        self.assertContains(response, "<h3>支付记录</h3>")
+        self.assertNotContains(response, "<h3>退款记录</h3>")
+
+    def test_board_shows_refund_group_when_present(self):
+        self._create_item(self.student, refunds=[_png_upload("r.png")])
+        self.client.force_login(self.student)
+        self.assertContains(self.client.get("/"), "<h3>退款记录</h3>")
+
+    def test_pdf_attachment_uses_lazy_iframe(self):
+        item = self._create_item(self.student, invoices=[_png_upload("a.pdf")])
+        pdf = item.attachments.get(kind=Attachment.KIND_INVOICE)
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertContains(response, f'data-src="/items/attachments/{pdf.pk}/file/"')
+        self.assertNotContains(response, f'<iframe src="/items/attachments/{pdf.pk}/file/"')
+
+    def test_other_user_sees_images_without_edit_entry(self):
+        item = self._create_item(self.student)
+        invoice = item.attachments.get(kind=Attachment.KIND_INVOICE)
+        self.client.force_login(self.student_b)
+        response = self.client.get("/")
+        self.assertContains(response, f'src="/items/attachments/{invoice.pk}/file/"')
+        self.assertNotContains(response, f"/items/{item.pk}/edit/")
+
+    def test_owner_and_staff_see_edit_entry(self):
+        item = self._create_item(self.student)
+        edit_url = f"/items/{item.pk}/edit/"
+        self.client.force_login(self.student)
+        self.assertContains(self.client.get("/"), edit_url)
+        self.client.force_login(self.staff)
+        self.assertContains(self.client.get("/"), edit_url)
+
+    def test_board_requires_login(self):
+        self.client.logout()
+        self.assertEqual(self.client.get("/").status_code, 302)

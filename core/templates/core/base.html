@@ -70,6 +70,15 @@
     form.attach-row-form { margin-top: 6px; }
     form.attach-row-form label { display: block; font-size: 12px; color: #57606a; margin-top: 6px; }
     form.attach-row-form input, form.attach-row-form select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
+    /* 条目详情模态浮层（issue #13）：看板条目整卡可点，弹层按类型分组展示附件 */
+    .item.clickable { cursor: pointer; }
+    .item.clickable:hover { border-color: #1f6feb; }
+    .detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 12px; }
+    .detail-head .title { font-size: 18px; font-weight: 700; }
+    .detail-head .spacer { flex: 1; }
+    .detail-head a { color: #1f6feb; text-decoration: none; font-size: 13px; }
+    dialog.item-detail { border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; width: min(960px, 94vw); max-height: 86vh; overflow-y: auto; }
+    dialog.item-detail::backdrop { background: rgba(31, 35, 40, 0.45); }
   </style>
 </head>
 <body>

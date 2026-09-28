@@ -41,6 +41,7 @@ def board(request):
         items = items.filter(status=status)
     by_category = {c.id: [] for c in Category.objects.all()}
     for item in items:
+        item.attachment_groups = _attachment_groups(item)
         by_category[item.category_id].append(item)
     groups = [(c, by_category[c.id]) for c in Category.objects.all()]
     return render(request, "core/board.html", {"groups": groups, "status": status})
@@ -176,7 +177,7 @@ def _owned_attachment(request, pk):
 
 
 def _attachment_groups(item):
-    """编辑页用：按 kind 汇总已保存附件。"""
+    """编辑页与看板条目详情共用：按 kind 汇总已保存附件。"""
     groups = {kind: [] for kind in KIND_LABELS}
     for attachment in item.attachments.all():
         groups[attachment.kind].append(attachment)
