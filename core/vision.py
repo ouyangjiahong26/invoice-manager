@@ -90,7 +90,7 @@ def _prefill_pdf(data, kind):
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         text = "\n".join(page.get_text() for page in doc).strip()
         if len(text) >= PDF_TEXT_MIN_CHARS:
-            result = _recognize([_text_part(PROMPTS[kind] + "\n\n以下是发票文件的文本内容：\n" + text)], kind)
+            result = _recognize([_text_part(PROMPTS[kind] + "\n\n以下是文件中提取的文本内容：\n" + text)], kind)
             if result:
                 result["_source"] = "text"
                 return result

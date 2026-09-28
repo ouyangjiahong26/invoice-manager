@@ -16,6 +16,9 @@ class ItemAdmin(admin.ModelAdmin):
     list_editable = ("status",)
     readonly_fields = ("created_at", "updated_at", "attachments_display")
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related("attachments")
+
     @admin.display(description="附件")
     def attachments_display(self, obj):
         rows = format_html_join(

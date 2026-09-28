@@ -45,7 +45,7 @@ uv run python manage.py test
 ## Code Conventions
 - 函数视图 + `ModelForm`；权限用 `login_required` / `user_passes_test`，越权改他人条目抛 `PermissionDenied`（403）。
 - 付款人 = `owner`（Django user），真实姓名存 `first_name`，账号开通时由管理员填写；不建 Person/Student 模型。
-- 警告类业务规则唯一实现在 `core/validation.py: check_item(item, prefill_data=None)`，前端不重复实现规则本体。
+- 警告类业务规则唯一实现在 `core/validation.py: check_item(item)`，前端不重复实现规则本体。
 - 中文 verbose_name/choices，英文标识符。
 
 ## Deployment

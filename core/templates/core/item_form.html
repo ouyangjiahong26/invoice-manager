@@ -232,11 +232,14 @@
       el.name = prefix + "_" + index + "_" + el.dataset.role;
     });
   }
+  function freshCards(kind) {
+    return cards(kind).filter(function (card) { return !!card._file; });
+  }
   function syncFiles(kind) {
     var input = uploadInput(kind);
     var transfer = new DataTransfer();
-    cards(kind).forEach(function (card, index) {
-      if (card._file) transfer.items.add(card._file);
+    freshCards(kind).forEach(function (card, index) {
+      transfer.items.add(card._file);
       renumberCard(card, index);
     });
     input.files = transfer.files;
@@ -281,6 +284,7 @@
     card.querySelector(".attach-name").textContent = file.name;
     var preview = card.querySelector(".attach-preview");
     var url = URL.createObjectURL(file);
+    card._url = url;
     if (/\.pdf$/i.test(file.name)) {
       var frame = document.createElement("iframe");
       frame.src = url;
@@ -311,6 +315,7 @@
     ocr.dataset.role = "ocr";
     fields.appendChild(ocr);
     card.querySelector(".attach-remove").addEventListener("click", function () {
+      if (card._url) URL.revokeObjectURL(card._url);
       card.remove();
       syncFiles(kind);
       render();
@@ -437,7 +442,7 @@
   }
 
   function refreshSummary(state) {
-    var all = cards();
+    var all = freshCards();
     var recognized = all.filter(function (card) {
       return card.querySelector(".attach-status.ok");
     }).length;

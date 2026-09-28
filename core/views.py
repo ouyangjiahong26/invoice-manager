@@ -218,9 +218,10 @@ def _new_attachment(request, upload, prefix, index, kind):
     raw_ocr = value("ocr")
     if raw_ocr:
         try:
-            attachment.ocr_data = json.loads(raw_ocr)
+            parsed = json.loads(raw_ocr)
         except ValueError:
-            attachment.ocr_data = None
+            parsed = None
+        attachment.ocr_data = parsed if isinstance(parsed, dict) else None
     return attachment
 
 

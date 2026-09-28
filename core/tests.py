@@ -132,6 +132,16 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         self.assertRedirects(response, "/")
         self.assertNotContains(response, "不一致")
 
+    def test_non_dict_ocr_is_dropped(self):
+        self.client.force_login(self.student)
+        data = _item_data(category=self.category.pk, payments=[])
+        data["new_invoice_0_amount"] = "100.00"
+        data["new_invoice_0_ocr"] = "5"
+        response = self.client.post("/items/new/", data, follow=True)
+        self.assertRedirects(response, "/")
+        invoice = Item.objects.latest("id").attachments.get(kind=Attachment.KIND_INVOICE)
+        self.assertIsNone(invoice.ocr_data)
+
     def test_rejects_disallowed_extension(self):
         self.client.force_login(self.student)
         data = _item_data(
