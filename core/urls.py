@@ -6,6 +6,7 @@ urlpatterns = [
     path("", views.board, name="board"),
     path("items/new/", views.item_create, name="item_create"),
     path("items/<int:pk>/edit/", views.item_update, name="item_update"),
+    path("items/<int:pk>/delete/", views.item_delete, name="item_delete"),
     path("items/<int:pk>/file/<str:kind>/", views.file_serve, name="file_serve"),
     path("items/prefill/", views.prefill, name="item_prefill"),
     path("export/excel/", views.export_excel, name="export_excel"),

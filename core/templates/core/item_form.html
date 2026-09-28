@@ -21,6 +21,29 @@
   </form>
 </div>
 
+{% if audit_logs %}
+<div class="card" style="max-width:520px">
+  <h2>操作记录</h2>
+  <table>
+    <thead>
+      <tr><th>时间</th><th>操作人</th><th>动作</th><th>明细</th></tr>
+    </thead>
+    <tbody>
+      {% for log in audit_logs %}
+      <tr>
+        <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
+        <td>{{ log.actor_name|default:"系统" }}</td>
+        <td>{{ log.get_action_display }}</td>
+        <td>
+          {% for label, text in log.detail_rows %}<div>{{ label }}：{{ text }}</div>{% empty %}—{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <script>
 (function () {
   var input = document.getElementById("{{ form.invoice_file.id_for_label }}");

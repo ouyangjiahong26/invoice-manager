@@ -59,6 +59,7 @@ def item_update(request, pk):
     item = get_object_or_404(Item, pk=pk)
     if item.owner_id != request.user.id and not request.user.is_staff:
         raise PermissionDenied("只能修改自己的条目")
+    audit_logs = item.audit_logs.all()
     if request.method == "POST":
         form = ItemForm(request.POST, request.FILES, instance=item)
         if form.is_valid():
@@ -70,7 +71,19 @@ def item_update(request, pk):
             return redirect("board")
     else:
         form = ItemForm(instance=item)
-    return render(request, "core/item_form.html", {"form": form, "item": item, "is_create": False})
+    return render(request, "core/item_form.html",
+                  {"form": form, "item": item, "is_create": False, "audit_logs": audit_logs})
+
+
+@login_required
+@require_POST
+def item_delete(request, pk):
+    item = get_object_or_404(Item, pk=pk)
+    if item.owner_id != request.user.id:
+        raise PermissionDenied("只能删除自己的条目")
+    item.delete()
+    messages.success(request, "已删除。")
+    return redirect("board")
 
 
 @login_required

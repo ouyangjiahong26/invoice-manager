@@ -63,3 +63,49 @@ class Item(models.Model):
     @property
     def payer_name(self):
         return self.owner.get_full_name() or self.owner.username
+
+
+class AuditLog(models.Model):
+    ACTION_CREATE = "create"
+    ACTION_UPDATE = "update"
+    ACTION_DELETE = "delete"
+    ACTION_CHOICES = [
+        (ACTION_CREATE, "创建"),
+        (ACTION_UPDATE, "修改"),
+        (ACTION_DELETE, "删除"),
+    ]
+    item = models.ForeignKey(
+        Item, null=True, on_delete=models.SET_NULL,
+        related_name="audit_logs", verbose_name="条目",
+    )
+    item_pk = models.PositiveIntegerField("条目编号")
+    action = models.CharField("动作", max_length=10, choices=ACTION_CHOICES)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+        related_name="audit_logs", verbose_name="操作人",
+    )
+    actor_name = models.CharField("操作人姓名", max_length=100, blank=True)
+    snapshot = models.JSONField("变更明细", default=dict)
+    created_at = models.DateTimeField("操作时间", auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "操作留痕"
+        verbose_name_plural = "操作留痕"
+
+    def __str__(self):
+        return f"{self.actor_name or '系统'} {self.get_action_display()} #{self.item_pk}"
+
+    def detail_rows(self):
+        """返回 [(字段标签, 明细文本)]。update 为 "旧 → 新"，create/delete 为终值。"""
+        from .audit import FIELD_LABELS
+
+        rows = []
+        for field, change in self.snapshot.items():
+            label = FIELD_LABELS.get(field, field)
+            if isinstance(change, list):
+                text = " → ".join(change)
+            else:
+                text = change
+            rows.append((label, text))
+        return rows
