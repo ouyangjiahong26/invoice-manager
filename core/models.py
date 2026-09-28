@@ -4,6 +4,7 @@ from django.db import models
 
 class Category(models.Model):
     name = models.CharField("类别名称", max_length=50, unique=True)
+    description = models.CharField("类别说明", max_length=200, blank=True, default="")
     order = models.PositiveSmallIntegerField("排序", default=0)
 
     class Meta:
@@ -42,10 +43,6 @@ class Item(models.Model):
     invoice_amount = models.DecimalField(
         "发票金额", max_digits=10, decimal_places=2, null=True, blank=True
     )
-    invoice_no = models.CharField("发票号码", max_length=50, blank=True)
-    order_no = models.CharField("支付订单号", max_length=64)
-    invoice_file = models.FileField("票据", upload_to="invoices/%Y%m/")
-    payment_screenshot = models.ImageField("支付截图", upload_to="payments/%Y%m/")
     status = models.CharField(
         "状态", max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING
     )
@@ -63,6 +60,63 @@ class Item(models.Model):
     @property
     def payer_name(self):
         return self.owner.get_full_name() or self.owner.username
+
+    def attachment_of_kind(self, kind):
+        """该条目下指定类型的第一张附件（配合 prefetch_related 零额外查询）。"""
+        for attachment in self.attachments.all():
+            if attachment.kind == kind:
+                return attachment
+        return None
+
+    @property
+    def first_invoice(self):
+        return self.attachment_of_kind(Attachment.KIND_INVOICE)
+
+    @property
+    def first_payment(self):
+        return self.attachment_of_kind(Attachment.KIND_PAYMENT)
+
+
+class Attachment(models.Model):
+    """条目下的单个票据文件：发票 / 支付记录 / 退款记录，一条目可有多张。"""
+
+    KIND_INVOICE, KIND_PAYMENT, KIND_REFUND = "invoice", "payment", "refund"
+    KIND_CHOICES = [
+        (KIND_INVOICE, "发票"),
+        (KIND_PAYMENT, "支付记录"),
+        (KIND_REFUND, "退款记录"),
+    ]
+
+    item = models.ForeignKey(
+        Item, on_delete=models.CASCADE, related_name="attachments", verbose_name="所属条目"
+    )
+    kind = models.CharField("类型", max_length=10, choices=KIND_CHOICES)
+    file = models.FileField("文件", upload_to="attachments/%Y%m/")
+    amount = models.DecimalField(
+        "金额", max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    order_no = models.CharField("平台单号", max_length=64, blank=True)
+    merchant_no = models.CharField("商户单号", max_length=64, blank=True)
+    invoice_no = models.CharField("发票号码", max_length=50, blank=True)
+    ocr_data = models.JSONField("识别结果", null=True, blank=True)
+    created_at = models.DateTimeField("上传时间", auto_now_add=True)
+
+    class Meta:
+        ordering = ["kind", "id"]
+        verbose_name = "附件"
+        verbose_name_plural = "附件"
+
+    def __str__(self):
+        return f"{self.get_kind_display()} {self.file.name}"
+
+    @property
+    def is_pdf(self):
+        return self.file.name.lower().endswith(".pdf")
+
+    @property
+    def display_name(self):
+        """文件名（去掉存储路径前缀），供页面显示。"""
+        return self.file.name.rsplit("/", 1)[-1]
 
 
 class AuditLog(models.Model):
@@ -98,12 +152,14 @@ class AuditLog(models.Model):
 
     def detail_rows(self):
         """返回 [(字段标签, 明细文本)]。update 为 "旧 → 新"，create/delete 为终值。"""
-        from .audit import FIELD_LABELS
+        from .audit import FIELD_LABELS, format_attachments
 
         rows = []
         for field, change in self.snapshot.items():
             label = FIELD_LABELS.get(field, field)
-            if isinstance(change, list):
+            if field == "attachments":
+                text = format_attachments(change)
+            elif isinstance(change, list):
                 text = " → ".join(change)
             else:
                 text = change

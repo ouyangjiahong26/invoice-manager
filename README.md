@@ -4,19 +4,21 @@
 ![release](https://img.shields.io/github/v/release/ouyangjiahong26/invoice-manager)
 ![license](https://img.shields.io/badge/license-MIT-blue.svg)
 ![python](https://img.shields.io/badge/python-3.12-blue.svg)
-![django](https://img.shields.io/badge/Django-5.2-green.svg)
+![django](https://img.shields.io/badge/Django-6.1-green.svg)
 
-学生登录后自助提交报销条目（发票 + 支付截图 + 订单号 + 实付金额），按类别看板展示；管理员在后台审核，一键导出报销 Excel 与票据 zip。账号仅由管理员开通，开放注册已关闭。
+学生登录后自助提交报销条目（发票/支付记录/退款记录附件，AI 识别回填金额与单号，页内预览核对 + 实付金额），按类别看板展示；管理员在后台审核，一键导出报销 Excel 与票据 zip。账号仅由管理员开通，开放注册已关闭。
 
 线上环境：[invoice.cislunarspace.cn](https://invoice.cislunarspace.cn)
 
 ## 功能
 
 - 条目提交与编辑（每人只能改自己的）
+- 每条目多附件：发票 / 支付记录 / 退款记录，支持图片与 PDF，页内预览原件
+- 上传即识别（DeepSeek）：图片走视觉接口，PDF 先提文本、不足则转图像；结果以"AI 建议"逐项核对后回填，失败静默降级为手填
+- 实时对照：附件金额合计自动回填实付款/发票金额，发票备注单号与支付记录单号互配检查
+- 五条自动校验警告（附件合计、实付>发票、缺 28 位平台单号、深色支付记录、抬头/税号），只提示不阻断
 - 看板按类别分组，`?status=` 状态过滤
-- 选图自动预填发票金额/号码（DeepSeek 识图），失败静默降级为手填
-- 三条自动校验警告（金额、深色截图、抬头/税号），只提示不阻断
-- 管理员审核 + 导出 Excel（按类别小记合计）与票据 zip
+- 管理员审核 + 导出 Excel（按类别小记合计）与票据 zip（文件名带类型与序号）
 - 媒体文件全部走 Django 鉴权下发，不经 nginx（ADR-0002）
 
 ## 界面预览
@@ -47,8 +49,8 @@ uv run python manage.py runserver   # http://127.0.0.1:8000/
 | `DJANGO_ALLOWED_HOSTS` | 允许的 Host | `127.0.0.1,localhost` |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | 可信 CSRF 来源 | 空 |
 | `DATABASE_URL` | 数据库连接串 | sqlite |
-| `DEEPSEEK_API_KEY` | DeepSeek 识图预填凭据；为空时预填整体关闭 | 空（关闭） |
-| `DEEPSEEK_MODEL` | 识图模型标识 | `deepseek-flash` |
+| `DEEPSEEK_API_KEY` | DeepSeek 识别凭据；为空时识别整体关闭 | 空（关闭） |
+| `DEEPSEEK_MODEL` | 识别模型标识 | `deepseek-flash` |
 | `DEEPSEEK_BASE_URL` | DeepSeek API 地址 | `https://api.deepseek.com` |
 | `EXPECTED_INVOICE_TITLE` / `EXPECTED_INVOICE_TAX_ID` | 期望发票抬头/税号，非空时启用对应校验警告 | 空（跳过校验） |
 

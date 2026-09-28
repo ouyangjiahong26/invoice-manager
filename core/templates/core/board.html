@@ -16,15 +16,15 @@
       {% for item in items %}
         <div class="item">
           <div class="title">{{ item.title }}</div>
-          <div class="meta">付款人：{{ item.payer_name }} · 订单号 {{ item.order_no }}</div>
+          <div class="meta">付款人：{{ item.payer_name }}{% if item.first_payment.order_no %} · 平台单号 {{ item.first_payment.order_no }}{% endif %}</div>
           <span class="amount">¥{{ item.actual_amount }}</span>
           {% if item.invoice_amount %}<span class="meta">（发票 ¥{{ item.invoice_amount }}）</span>{% endif %}
           <div style="margin-top:6px">
             <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
           </div>
           <div class="links">
-            <a href="{% url 'file_serve' item.pk 'payment' %}">支付截图</a>
-            <a href="{% url 'file_serve' item.pk 'invoice' %}">票据</a>
+            {% if item.first_payment %}<a href="{% url 'file_serve' item.first_payment.pk %}">支付记录</a>{% endif %}
+            {% if item.first_invoice %}<a href="{% url 'file_serve' item.first_invoice.pk %}">票据</a>{% endif %}
             {% if item.owner_id == user.id or user.is_staff %}
               <a href="{% url 'item_update' item.pk %}">编辑</a>
             {% endif %}
