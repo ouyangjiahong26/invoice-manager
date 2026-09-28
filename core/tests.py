@@ -1,7 +1,9 @@
 import base64
+import json
 import shutil
 import tempfile
 import zipfile
+from decimal import Decimal
 from io import BytesIO
 from unittest import mock
 
@@ -9,10 +11,11 @@ from django.contrib import admin
 from django.contrib.auth.models import User
 from django.contrib.messages.storage.cookie import CookieStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from openpyxl import load_workbook
 
+from . import pairing, vision
 from .audit import ActorMiddleware
 from .models import Attachment, AuditLog, Category, Item
 from .validation import check_item
@@ -479,3 +482,321 @@ class ItemDetailTests(SubmissionTestCase):
     def test_board_requires_login(self):
         self.client.logout()
         self.assertEqual(self.client.get("/").status_code, 302)
+
+
+class PairingTests(SimpleTestCase):
+    """pair() 纯函数：配对规则 1-4 的可观察行为。"""
+
+    @staticmethod
+    def _record(rid, kind, amount=None, **extra):
+        record = {"id": rid, "kind": kind, "amount": None if amount is None else Decimal(str(amount))}
+        record.update(extra)
+        return record
+
+    def test_remark_matches_payment_order_no(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "100", remark_order_no="X1"),
+            self._record(1, "payment", "100", order_no="X1"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1]])
+        self.assertEqual(result["pending"], [])
+        self.assertEqual(result["unmatched"], [])
+
+    def test_remark_matches_merchant_no_and_merges_duplicates(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "60", remark_order_no="M9"),
+            self._record(1, "invoice", "40", remark_order_no="M9"),
+            self._record(2, "payment", "60", merchant_no="M9"),
+            self._record(3, "payment", "40", merchant_no="M9"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1, 2, 3]])
+
+    def test_invoice_hitting_two_payment_groups_merges_them(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "30", remark_order_no="X1"),
+            self._record(1, "payment", "10", order_no="X1"),
+            self._record(2, "payment", "20", merchant_no="X1"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1, 2]])
+
+    def test_refund_attaches_by_order_no(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "80", remark_order_no="X1"),
+            self._record(1, "payment", "100", order_no="X1"),
+            self._record(2, "refund", "20", order_no="X1"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1, 2]])
+        self.assertEqual(result["unmatched"], [])
+
+    def test_refund_attaches_by_amount_fallback(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "80", remark_order_no="X1"),
+            self._record(1, "payment", "100", order_no="X1"),
+            self._record(2, "refund", "100"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1, 2]])
+
+    def test_refund_without_payment_is_unmatched(self):
+        result = pairing.pair([self._record(0, "refund", "5", order_no="NOPE")])
+        self.assertEqual(result["unmatched"], [{"id": 0, "reason": "退款记录找不到对应支付记录"}])
+
+    def test_amount_fallback_pairs_unique_candidates(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "199"),
+            self._record(1, "payment", "199"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1]])
+
+    def test_amount_fallback_multi_candidates_go_pending(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "50"),
+            self._record(1, "invoice", "50"),
+            self._record(2, "payment", "50"),
+            self._record(3, "payment", "50"),
+        ])
+        self.assertEqual(result["pending"], [[0, 1, 2, 3]])
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(result["unmatched"], [])
+
+    def test_all_unmatched_carry_reasons(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "10"),
+            self._record(1, "payment", "99"),
+            self._record(2, "unknown"),
+        ])
+        self.assertEqual(result["unmatched"], [
+            {"id": 0, "reason": "找不到对应支付记录"},
+            {"id": 1, "reason": "找不到对应发票"},
+            {"id": 2, "reason": "未能识别票据类型"},
+        ])
+
+
+
+@override_settings(DEEPSEEK_API_KEY="test-key")
+class VisionDetectTests(SimpleTestCase):
+    """detect / group_suggest / field_suggest 的解析与降级行为。"""
+
+    @staticmethod
+    def _response(content):
+        return {"choices": [{"message": {"content": content}}]}
+
+    def test_detect_returns_kind_and_fields(self):
+        content = json.dumps({
+            "kind": "payment", "amount": 12.5, "platform": "alipay",
+            "order_no": ALIPAY_ORDER_NO, "merchant_no": "M123",
+            "invoice_amount": None, "invoice_no": "", "remark_order_no": "",
+            "buyer_name": "", "buyer_id": "", "items_summary": "",
+        })
+        with mock.patch("core.vision._post", return_value=self._response(content)) as post:
+            result = vision.detect(PNG_1X1, "p.png")
+        self.assertTrue(post.called)
+        self.assertEqual(result["kind"], "payment")
+        self.assertEqual(result["amount"], 12.5)
+        self.assertEqual(result["platform"], "alipay")
+        self.assertEqual(result["order_no"], ALIPAY_ORDER_NO)
+        self.assertEqual(result["_source"], "image")
+
+    def test_detect_invoice_passes_items_summary(self):
+        content = json.dumps({
+            "kind": "invoice", "invoice_amount": 100, "invoice_no": "INV1",
+            "remark_order_no": "X1", "buyer_name": "清华大学", "buyer_id": "TAX1",
+            "items_summary": "*信息技术服务*云存储", "amount": None,
+            "platform": "unknown", "order_no": "", "merchant_no": "",
+        })
+        with mock.patch("core.vision._post", return_value=self._response(content)):
+            result = vision.detect(PNG_1X1, "i.png")
+        self.assertEqual(result["kind"], "invoice")
+        self.assertEqual(result["invoice_amount"], 100)
+        self.assertEqual(result["items_summary"], "*信息技术服务*云存储")
+        self.assertEqual(result["remark_order_no"], "X1")
+
+    def test_detect_garbage_returns_empty(self):
+        with mock.patch("core.vision._post", return_value=self._response("not json")):
+            self.assertEqual(vision.detect(PNG_1X1, "p.png"), {})
+
+    def test_detect_unconfigured_returns_empty(self):
+        with override_settings(DEEPSEEK_API_KEY=""):
+            with mock.patch("core.vision._post") as post:
+                self.assertEqual(vision.detect(PNG_1X1, "p.png"), {})
+        self.assertFalse(post.called)
+
+    def test_group_suggest_filters_unknown_ids_and_short_groups(self):
+        content = json.dumps({"groups": [[7, 8, 99], ["bad"], [9]]})
+        records = [
+            {"id": 7, "kind": "invoice", "amount": "30", "order_no": "", "merchant_no": "", "remark_order_no": ""},
+            {"id": 8, "kind": "payment", "amount": "30", "order_no": "Z", "merchant_no": "", "remark_order_no": ""},
+            {"id": 9, "kind": "refund", "amount": "1", "order_no": "", "merchant_no": "", "remark_order_no": ""},
+        ]
+        with mock.patch("core.vision._post", return_value=self._response(content)):
+            self.assertEqual(vision.group_suggest(records), [[7, 8]])
+
+    def test_field_suggest_drops_invalid_category(self):
+        content = json.dumps({"suggestions": [
+            {"title": "打印费", "category_id": 999}, {"title": "书", "category_id": 1},
+        ]})
+        with mock.patch("core.vision._post", return_value=self._response(content)):
+            result = vision.field_suggest(
+                [[{"id": 0, "kind": "invoice", "amount": "10", "items_summary": "打印"}]],
+                [{"id": 1, "name": "书籍", "description": ""}],
+            )
+        self.assertEqual(len(result["suggestions"]), 1)  # 超出组数的建议被截断
+        self.assertEqual(result["suggestions"][0]["title"], "打印费")
+        self.assertIsNone(result["suggestions"][0]["category_id"])  # 类别不在表中丢为 None
+
+    def test_field_suggest_pads_short_response_to_group_count(self):
+        content = json.dumps({"suggestions": [{"title": "打印费", "category_id": 1}]})
+        groups = [[{"id": 0, "kind": "invoice", "amount": "10", "items_summary": "打印"}],
+                  [{"id": 1, "kind": "payment", "amount": "10", "items_summary": ""}]]
+        with mock.patch("core.vision._post", return_value=self._response(content)):
+            result = vision.field_suggest(groups, [{"id": 1, "name": "书籍", "description": ""}])
+        self.assertEqual(len(result["suggestions"]), len(groups))  # 模型少给时补 None 与组等长
+        self.assertEqual(result["suggestions"][0], {"title": "打印费", "category_id": 1})
+        self.assertIsNone(result["suggestions"][1])
+
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class BatchSubmitTests(SubmissionTestCase):
+    def _post_batch(self, groups, files):
+        return self.client.post(
+            "/items/batch/submit/", {"plan": json.dumps({"groups": groups}), "files": files}
+        )
+
+    def test_submit_creates_pending_items_with_attachments(self):
+        self.client.force_login(self.student)
+        response = self._post_batch([
+            {
+                "title": "硬盘", "category": self.category.pk,
+                "actual_amount": "80.00", "invoice_amount": "100.00",
+                "files": [
+                    {"index": 0, "kind": "invoice", "amount": "100.00", "invoice_no": "INV1",
+                     "ocr": {"buyer_name": "清华大学"}},
+                    {"index": 1, "kind": "payment", "amount": "100.00", "order_no": ALIPAY_ORDER_NO},
+                    {"index": 2, "kind": "refund", "amount": "20.00", "merchant_no": "R1"},
+                ],
+            },
+            {
+                "title": "打印费", "category": self.category.pk,
+                "actual_amount": "5.00", "invoice_amount": "5.00",
+                "files": [
+                    {"index": 3, "kind": "invoice", "amount": "5.00"},
+                    {"index": 4, "kind": "payment", "amount": "5.00"},
+                ],
+            },
+        ], [
+            _png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png"),
+            _png_upload("invoice2.png"), _png_upload("payment2.png"),
+        ])
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.count(), 2)
+        item = Item.objects.order_by("id").first()
+        self.assertEqual(item.owner, self.student)
+        self.assertEqual(item.title, "硬盘")
+        self.assertEqual(item.status, Item.STATUS_PENDING)
+        self.assertEqual(str(item.actual_amount), "80.00")
+        self.assertEqual(item.attachments.count(), 3)
+        payment = item.attachments.get(kind=Attachment.KIND_PAYMENT)
+        self.assertEqual(str(payment.amount), "100.00")
+        self.assertEqual(payment.order_no, ALIPAY_ORDER_NO)
+        invoice = item.attachments.get(kind=Attachment.KIND_INVOICE)
+        self.assertEqual(invoice.ocr_data, {"buyer_name": "清华大学"})
+        log = AuditLog.objects.get(action="create", item_pk=item.pk)
+        self.assertEqual(len(log.snapshot["attachments"]), 3)
+
+    def test_single_sided_group_rejected_without_items(self):
+        self.client.force_login(self.student)
+        response = self._post_batch([
+            {
+                "title": "只有发票", "category": self.category.pk,
+                "actual_amount": "10.00",
+                "files": [{"index": 0, "kind": "invoice", "amount": "10.00"}],
+            },
+        ], [_png_upload("invoice.png")])
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("缺少发票或支付记录", response.json()["error"])
+        self.assertFalse(Item.objects.exists())
+
+    def test_full_refund_group_accepts_zero_actual(self):
+        # 全退款组净额 0：actual_amount 为 JSON 数字 0 时不能被当缺失拒掉
+        self.client.force_login(self.student)
+        response = self._post_batch([{
+            "title": "全退款", "category": self.category.pk,
+            "actual_amount": 0, "invoice_amount": "20.00",
+            "files": [
+                {"index": 0, "kind": "invoice", "amount": "20.00"},
+                {"index": 1, "kind": "payment", "amount": "20.00", "order_no": ALIPAY_ORDER_NO},
+                {"index": 2, "kind": "refund", "amount": "20.00", "order_no": ALIPAY_ORDER_NO},
+            ],
+        }], [_png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png")])
+        self.assertRedirects(response, "/")
+        item = Item.objects.latest("id")
+        self.assertEqual(str(item.actual_amount), "0.00")
+
+    def test_amount_beyond_model_limits_rejected(self):
+        self.client.force_login(self.student)
+        base = {
+            "title": "越界", "category": self.category.pk,
+            "files": [
+                {"index": 0, "kind": "invoice", "amount": "10.00"},
+                {"index": 1, "kind": "payment", "amount": "10.00"},
+            ],
+        }
+        for bad in ("100000000", "1.005"):
+            with self.subTest(amount=bad):
+                response = self._post_batch(
+                    [{**base, "actual_amount": bad}],
+                    [_png_upload("invoice.png"), _png_upload("payment.png")],
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("最多两位小数", response.json()["error"])
+        self.assertFalse(Item.objects.exists())
+
+    def test_requires_login(self):
+        response = self.client.post("/items/batch/submit/", {})
+        self.assertEqual(response.status_code, 302)
+
+
+
+@override_settings(DEEPSEEK_API_KEY="test-key")
+class BatchPairViewTests(SubmissionTestCase):
+    def _post_pair(self, records):
+        return self.client.post(
+            "/items/batch/pair/", json.dumps({"records": records}), content_type="application/json"
+        )
+
+    def test_rule_groups_returned_when_unconfigured(self):
+        self.client.force_login(self.student)
+        with override_settings(DEEPSEEK_API_KEY=""):
+            response = self._post_pair([
+                {"id": 0, "kind": "invoice", "amount": "100", "remark_order_no": "X1"},
+                {"id": 1, "kind": "payment", "amount": "100", "order_no": "X1"},
+            ])
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["groups"], [[0, 1]])
+        self.assertEqual(data["pending"], [])
+        self.assertEqual(data["unmatched"], [])
+        self.assertEqual(data["suggestions"], {})
+
+    def test_llm_groups_merged_with_suggestions(self):
+        self.client.force_login(self.student)
+        with mock.patch("core.vision.group_suggest", return_value=[[0, 1]]) as group_mock:
+            with mock.patch(
+                "core.vision.field_suggest",
+                return_value={"suggestions": [{"title": "打印费", "category_id": self.category.pk}]},
+            ) as field_mock:
+                response = self._post_pair([
+                    {"id": 0, "kind": "invoice", "amount": "30"},
+                    {"id": 1, "kind": "payment", "amount": "35", "order_no": "Z9"},
+                ])
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["groups"], [[0, 1]])
+        self.assertEqual(data["unmatched"], [])
+        self.assertEqual(group_mock.call_args[0][0][0]["id"], 0)
+        self.assertEqual(field_mock.call_args[0][0][0][0]["id"], 0)
+        self.assertEqual(data["suggestions"]["suggestions"][0]["title"], "打印费")
+
+    def test_requires_login(self):
+        response = self.client.post("/items/batch/pair/", "{}", content_type="application/json")
+        self.assertEqual(response.status_code, 302)
