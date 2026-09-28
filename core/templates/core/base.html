@@ -87,6 +87,7 @@
   {% if user.is_authenticated %}
     <a href="{% url 'board' %}">看板</a>
     <a href="{% url 'item_create' %}">提交条目</a>
+    <a href="{% url 'batch_create' %}">批量提交</a>
     {% if user.is_staff %}
       <a href="{% url 'export_excel' %}">导出 Excel</a>
       <a href="{% url 'export_zip' %}">导出 zip</a>

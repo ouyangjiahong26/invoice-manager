@@ -7,6 +7,7 @@ from itertools import groupby
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -15,6 +16,7 @@ from django.views.decorators.http import require_POST
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from . import pairing, vision
 from .audit import attachment_entries, attachment_entry, mark_attachments
 from .forms import AttachmentForm, ItemForm
 from .models import Attachment, Category, Item
@@ -169,6 +171,230 @@ def prefill(request):
     return JsonResponse(vision_prefill(upload.read(), upload.name, kind))
 
 
+@login_required
+def batch_create(request):
+    """批量配对提交页：混合上传 → 识别 → 配对 → 确认创建。"""
+    categories = Category.objects.all()
+    notes = [f"{category.name}：{category.description}" for category in categories if category.description]
+    return render(request, "core/batch_form.html", {
+        "vision_configured": vision.configured(),
+        "categories": [
+            {"id": category.pk, "name": category.name, "description": category.description}
+            for category in categories
+        ],
+        "category_notes": "；".join(notes),
+    })
+
+
+@require_POST
+@login_required
+def batch_detect(request):
+    """批量页逐张识别：判类型并提取字段，不落库。"""
+    upload = request.FILES.get("file")
+    if upload is None:
+        return JsonResponse({"error": "缺少 file 字段"}, status=400)
+    error = validate_upload(upload)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+    return JsonResponse(vision.detect(upload.read(), upload.name))
+
+
+@require_POST
+@login_required
+def batch_pair(request):
+    """规则配对 + LLM 兜底：返回分组、待确认组、未配对与字段建议。"""
+    try:
+        payload = json.loads(request.body or "{}")
+    except ValueError:
+        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+    raw_records = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(raw_records, list):
+        return JsonResponse({"error": "缺少 records 列表"}, status=400)
+
+    records = []
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            return JsonResponse({"error": "records 元素必须是对象"}, status=400)
+        records.append({
+            "id": raw.get("id"),
+            "kind": raw.get("kind"),
+            "amount": _decimal_or_none(raw.get("amount")),
+            "order_no": raw.get("order_no") or "",
+            "merchant_no": raw.get("merchant_no") or "",
+            "invoice_no": raw.get("invoice_no") or "",
+            "remark_order_no": raw.get("remark_order_no") or "",
+            "items_summary": raw.get("items_summary") or "",
+        })
+
+    result = pairing.pair(records)
+    groups, pending, unmatched = result["groups"], result["pending"], result["unmatched"]
+    by_id = {record["id"]: record for record in records}
+    if vision.configured():
+        groups, pending, unmatched = _llm_merge_groups(by_id, groups, pending, unmatched)
+    suggestions = {}
+    if vision.configured() and groups:
+        categories = [
+            {"id": category.pk, "name": category.name, "description": category.description}
+            for category in Category.objects.all()
+        ]
+        suggestions = vision.field_suggest(
+            [[_suggest_member(by_id[rid]) for rid in group] for group in groups], categories
+        )
+    return JsonResponse({
+        "groups": groups, "pending": pending, "unmatched": unmatched, "suggestions": suggestions,
+    })
+
+
+@require_POST
+@login_required
+def batch_submit(request):
+    """按确认后的分组计划一次性创建多条待审核条目；任一校验失败整体拒绝，不建任何条目。"""
+    uploads = request.FILES.getlist("files")
+    try:
+        plan = json.loads(request.POST.get("plan") or "")
+    except ValueError:
+        return JsonResponse({"error": "plan 不是合法 JSON"}, status=400)
+    raw_groups = plan.get("groups") if isinstance(plan, dict) else None
+    if not isinstance(raw_groups, list) or not raw_groups:
+        return JsonResponse({"error": "缺少分组计划"}, status=400)
+
+    prepared = []
+    for number, group in enumerate(raw_groups, start=1):
+        if not isinstance(group, dict):
+            return JsonResponse({"error": f"第 {number} 组信息无效"}, status=400)
+        title = str(group.get("title") or "").strip()[:200]
+        if not title:
+            return JsonResponse({"error": f"第 {number} 组缺少明细"}, status=400)
+        category = Category.objects.filter(pk=group.get("category")).first()
+        if category is None:
+            return JsonResponse({"error": f"第 {number} 组类别无效"}, status=400)
+        try:
+            actual_amount = Decimal(str(group.get("actual_amount") or "").strip())
+        except InvalidOperation:
+            return JsonResponse({"error": f"第 {number} 组实付金额格式不正确"}, status=400)
+        invoice_amount = None
+        if group.get("invoice_amount") not in (None, ""):
+            try:
+                invoice_amount = Decimal(str(group["invoice_amount"]).strip())
+            except InvalidOperation:
+                return JsonResponse({"error": f"第 {number} 组发票金额格式不正确"}, status=400)
+        entries = group.get("files")
+        if not isinstance(entries, list) or not entries:
+            return JsonResponse({"error": f"第 {number} 组缺少文件"}, status=400)
+        attachments, kinds = [], set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return JsonResponse({"error": f"第 {number} 组文件信息无效"}, status=400)
+            kind = entry.get("kind")
+            if kind not in KIND_LABELS:
+                return JsonResponse({"error": f"第 {number} 组含未识别类型的文件，请先修正类型"}, status=400)
+            try:
+                upload = uploads[int(entry.get("index"))]
+            except (TypeError, ValueError, IndexError):
+                return JsonResponse({"error": f"第 {number} 组文件序号无效"}, status=400)
+            error = validate_upload(upload)
+            if error:
+                return JsonResponse({"error": f"{upload.name}：{error}"}, status=400)
+            try:
+                attachments.append(_build_attachment(kind, upload, entry))
+            except ValueError as exc:
+                return JsonResponse({"error": f"{upload.name}：{exc}"}, status=400)
+            kinds.add(kind)
+        if Attachment.KIND_INVOICE not in kinds or Attachment.KIND_PAYMENT not in kinds:
+            return JsonResponse({"error": f"第 {number} 组缺少发票或支付记录，无法报销"}, status=400)
+        prepared.append((title, category, actual_amount, invoice_amount, attachments))
+
+    with transaction.atomic():
+        for title, category, actual_amount, invoice_amount, attachments in prepared:
+            item = Item(
+                owner=request.user,
+                title=title,
+                category=category,
+                actual_amount=actual_amount,
+                invoice_amount=invoice_amount,
+                status=Item.STATUS_PENDING,
+            )
+            mark_attachments(item, [attachment_entry(a) for a in attachments], [])
+            item.save()
+            for attachment in attachments:
+                attachment.item = item
+                attachment.save()
+            for warning in check_item(item):
+                messages.warning(request, f"{title}：{warning}")
+    messages.success(request, f"已批量提交 {len(prepared)} 条，等待管理员审核。")
+    return redirect("board")
+
+
+def _decimal_or_none(raw):
+    if raw is None or raw == "":
+        return None
+    try:
+        return Decimal(str(raw).strip())
+    except InvalidOperation:
+        return None
+
+
+def _llm_merge_groups(by_id, groups, pending, unmatched):
+    """LLM 兜底配对：把未配对与待确认记录交给模型归组，配成的移入 groups，仍配不上的留 unmatched。"""
+    summaries = []
+    candidate_ids = set()
+    for entry in unmatched:
+        record = by_id.get(entry["id"])
+        if record and record.get("kind") in KIND_LABELS:
+            summaries.append(_pair_summary(record))
+            candidate_ids.add(entry["id"])
+    for group in pending:
+        for rid in group:
+            record = by_id.get(rid)
+            if record:
+                summaries.append(_pair_summary(record))
+                candidate_ids.add(rid)
+    kinds = {by_id[rid].get("kind") for rid in candidate_ids}
+    if Attachment.KIND_INVOICE not in kinds or Attachment.KIND_PAYMENT not in kinds:
+        return groups, pending, unmatched
+
+    consumed = set()
+    llm_groups = []
+    for group in vision.group_suggest(summaries):
+        if any(rid in consumed for rid in group):
+            continue
+        llm_groups.append(group)
+        consumed.update(group)
+    if not llm_groups:
+        return groups, pending, unmatched
+    rest_pending = []
+    for group in pending:
+        rest = [rid for rid in group if rid not in consumed]
+        if rest:
+            rest_pending.append(rest)
+    rest_unmatched = [entry for entry in unmatched if entry["id"] not in consumed]
+    return groups + llm_groups, rest_pending, rest_unmatched
+
+
+def _pair_summary(record):
+    """LLM 配对用的记录摘要。"""
+    amount = record.get("amount")
+    return {
+        "id": record["id"],
+        "kind": record.get("kind"),
+        "amount": str(amount) if amount is not None else None,
+        "order_no": record.get("order_no") or "",
+        "merchant_no": record.get("merchant_no") or "",
+        "remark_order_no": record.get("remark_order_no") or "",
+    }
+
+
+def _suggest_member(record):
+    """LLM 字段建议用的组成员摘要。"""
+    amount = record.get("amount")
+    return {
+        "id": record["id"],
+        "kind": record.get("kind"),
+        "amount": str(amount) if amount is not None else None,
+        "items_summary": record.get("items_summary") or "",
+    }
+
+
 def _owned_attachment(request, pk):
     attachment = get_object_or_404(Attachment, pk=pk)
     if attachment.item.owner_id != request.user.id and not request.user.is_staff:
@@ -204,26 +430,51 @@ def _new_attachment(request, upload, prefix, index, kind):
     def value(name):
         return (request.POST.get(f"{prefix}_{index}_{name}") or "").strip()
 
+    return _build_attachment(kind, upload, {
+        "amount": value("amount"),
+        "order_no": value("order_no"),
+        "merchant_no": value("merchant_no"),
+        "invoice_no": value("invoice_no"),
+        "ocr": value("ocr"),
+    })
+
+
+def _build_attachment(kind, upload, fields):
+    """按字段 dict 构造未保存的 Attachment；金额非法抛 ValueError。
+
+    fields 取值兼容字符串（单条表单 POST）与 JSON 值（批量 plan）。
+    """
     attachment = Attachment(kind=kind, file=upload)
-    raw_amount = value("amount")
-    if raw_amount:
+
+    def text(name, limit):
+        raw = fields.get(name)
+        return ("" if raw is None else str(raw).strip())[:limit]
+
+    raw_amount = fields.get("amount")
+    if raw_amount not in (None, ""):
         try:
-            attachment.amount = Decimal(raw_amount)
+            attachment.amount = Decimal(str(raw_amount).strip())
         except InvalidOperation:
             raise ValueError("金额格式不正确")
         if attachment.amount < 0:
             raise ValueError("金额不能为负")
-    attachment.order_no = value("order_no")[:64]
-    attachment.merchant_no = value("merchant_no")[:64]
-    attachment.invoice_no = value("invoice_no")[:50]
-    raw_ocr = value("ocr")
-    if raw_ocr:
-        try:
-            parsed = json.loads(raw_ocr)
-        except ValueError:
-            parsed = None
-        attachment.ocr_data = parsed if isinstance(parsed, dict) else None
+    attachment.order_no = text("order_no", 64)
+    attachment.merchant_no = text("merchant_no", 64)
+    attachment.invoice_no = text("invoice_no", 50)
+    attachment.ocr_data = _ocr_value(fields.get("ocr"))
     return attachment
+
+
+def _ocr_value(raw):
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
 
 
 def _staff(user):
