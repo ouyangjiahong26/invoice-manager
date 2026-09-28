@@ -2,7 +2,6 @@ from io import BytesIO
 from itertools import groupby
 
 from django.contrib import messages
-from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
@@ -15,25 +14,13 @@ from openpyxl.styles import Font
 
 import zipfile
 
-from .forms import ItemForm, SignUpForm
+from .forms import ItemForm
 from .models import Category, Item
 from .ocr import ALLOWED_CONTENT_TYPES, MAX_IMAGE_BYTES, prefill as ocr_prefill_image
 from .validation import check_item
 
 STATUS_FILTERS = {Item.STATUS_PENDING, Item.STATUS_APPROVED, Item.STATUS_REJECTED}
 AMOUNT_FORMAT = "0.00_ "
-
-
-def register(request):
-    if request.user.is_authenticated:
-        return redirect("board")
-    form = SignUpForm(request.POST or None)
-    if request.method == "POST" and form.is_valid():
-        user = form.save()
-        login(request, user)
-        messages.success(request, "注册成功，欢迎！")
-        return redirect("board")
-    return render(request, "core/register.html", {"form": form})
 
 
 @login_required

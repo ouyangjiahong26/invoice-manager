@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Overview
-报销看板（发票报销管理）：学生注册登录后自助提交报销条目（发票文件 + 支付截图 + 支付订单号 + 实付金额），按类别共享看板展示，只能修改自己的条目；管理员在 Django admin 审核，通过后一键导出用户格式 Excel（按类别小记+合计）与票据 zip。中文界面（`zh-hans`），服务端渲染，无前端构建链。
+报销看板（发票报销管理）：账号由管理员在后台开通（用户名 = 姓名拼音+年级，如 ouyangjiahong22），学生登录后自助提交报销条目（发票文件 + 支付截图 + 支付订单号 + 实付金额），按类别共享看板展示，只能修改自己的条目；管理员在 Django admin 审核，通过后一键导出用户格式 Excel（按类别小记+合计）与票据 zip。中文界面（`zh-hans`），服务端渲染，无前端构建链。**开放注册已关闭（ADR-0003）**。
 
 ## Architecture & Data Flow
 Django 5.2 项目，项目配置包 `config`，唯一 app `core`，全函数视图 + Django 模板。
@@ -41,7 +41,7 @@ uv run python manage.py test
 
 ## Code Conventions
 - 函数视图 + `ModelForm`；权限用 `login_required` / `user_passes_test`，越权改他人条目抛 `PermissionDenied`（403）。
-- 付款人 = `owner`（Django user），真实姓名存 `first_name`，注册时必填；不建 Person/Student 模型。
+- 付款人 = `owner`（Django user），真实姓名存 `first_name`，账号开通时由管理员填写；不建 Person/Student 模型。
 - 警告类业务规则唯一实现在 `core/validation.py: check_item(item, ocr_data=None)`，前端不重复实现规则本体。
 - OCR 客户端每次请求实例化，失败重试 1 次后返回空 dict，不阻塞上传。
 - 中文 verbose_name/choices，英文标识符。

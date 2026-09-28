@@ -3,7 +3,7 @@
 ## 核心概念
 
 - **报销条目（Item）**：学生提交的一条报销记录。字段：明细 `title`、类别 `category`、实付款 `actual_amount`、发票金额 `invoice_amount`、发票号码 `invoice_no`、支付订单号 `order_no`、票据 `invoice_file`、支付截图 `payment_screenshot`、状态 `status`。
-- **付款人（owner）**：条目归属人，即注册学生；真实姓名存 `user.first_name`，展示时用 `get_full_name()` 回退 `username`。
+- **付款人（owner）**：条目归属人，即学生；账号由管理员在后台开通，真实姓名存 `user.first_name`（建号时填写），展示时用 `get_full_name()` 回退 `username`。
 - **类别（Category）**：报销大类（信息服务费/竞赛报名费/书籍），`order` 决定看板与导出中的排列顺序。
 - **实付款（actual_amount）**：学生实际支付、作为报销基准的金额。必填。
 - **发票金额（invoice_amount）**：发票票面金额，可为空（无票/未填）。
