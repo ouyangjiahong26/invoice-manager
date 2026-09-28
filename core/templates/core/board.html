@@ -1,0 +1,39 @@
+{% extends "core/base.html" %}
+
+{% block content %}
+<h1>报销看板</h1>
+<div class="filters" style="margin-bottom:8px">
+  <a href="{% url 'board' %}" {% if not status %}class="active"{% endif %}>全部</a>
+  <a href="{% url 'board' %}?status=pending" {% if status == 'pending' %}class="active"{% endif %}>待审核</a>
+  <a href="{% url 'board' %}?status=approved" {% if status == 'approved' %}class="active"{% endif %}>已通过</a>
+  <a href="{% url 'board' %}?status=rejected" {% if status == 'rejected' %}class="active"{% endif %}>已退回</a>
+</div>
+
+{% for category, items in groups %}
+  <h2>{{ category.name }}（{{ items|length }}）</h2>
+  {% if items %}
+    <div class="items">
+      {% for item in items %}
+        <div class="item">
+          <div class="title">{{ item.title }}</div>
+          <div class="meta">付款人：{{ item.payer_name }} · 订单号 {{ item.order_no }}</div>
+          <span class="amount">¥{{ item.actual_amount }}</span>
+          {% if item.invoice_amount %}<span class="meta">（发票 ¥{{ item.invoice_amount }}）</span>{% endif %}
+          <div style="margin-top:6px">
+            <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
+          </div>
+          <div class="links">
+            <a href="{% url 'file_serve' item.pk 'payment' %}">支付截图</a>
+            <a href="{% url 'file_serve' item.pk 'invoice' %}">票据</a>
+            {% if item.owner_id == user.id or user.is_staff %}
+              <a href="{% url 'item_update' item.pk %}">编辑</a>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="meta" style="color:#57606a;font-size:14px">暂无条目</div>
+  {% endif %}
+{% endfor %}
+{% endblock %}

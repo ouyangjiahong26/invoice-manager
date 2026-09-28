@@ -1,0 +1,20 @@
+{% extends "core/base.html" %}
+{% block title %}登录{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:420px">
+  <h1>登录</h1>
+  <form class="stack" method="post">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {% for field in form %}
+      <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+      {{ field.errors }}
+      {{ field }}
+    {% endfor %}
+    <input type="hidden" name="next" value="{{ next }}">
+    <button type="submit">登录</button>
+    <a href="{% url 'register' %}" style="margin-left:10px;font-size:14px">没有账号？注册</a>
+  </form>
+</div>
+{% endblock %}
