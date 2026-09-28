@@ -14,7 +14,8 @@
 
 - 条目提交与编辑（每人只能改自己的）
 - 看板按类别分组，`?status=` 状态过滤
-- 两条自动校验警告（金额、深色截图），只提示不阻断
+- 选图自动预填发票金额/号码（DeepSeek 识图），失败静默降级为手填
+- 三条自动校验警告（金额、深色截图、抬头/税号），只提示不阻断
 - 管理员审核 + 导出 Excel（按类别小记合计）与票据 zip
 - 媒体文件全部走 Django 鉴权下发，不经 nginx（ADR-0002）
 
@@ -46,6 +47,10 @@ uv run python manage.py runserver   # http://127.0.0.1:8000/
 | `DJANGO_ALLOWED_HOSTS` | 允许的 Host | `127.0.0.1,localhost` |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | 可信 CSRF 来源 | 空 |
 | `DATABASE_URL` | 数据库连接串 | sqlite |
+| `DEEPSEEK_API_KEY` | DeepSeek 识图预填凭据；为空时预填整体关闭 | 空（关闭） |
+| `DEEPSEEK_MODEL` | 识图模型标识 | `deepseek-flash` |
+| `DEEPSEEK_BASE_URL` | DeepSeek API 地址 | `https://api.deepseek.com` |
+| `EXPECTED_INVOICE_TITLE` / `EXPECTED_INVOICE_TAX_ID` | 期望发票抬头/税号，非空时启用对应校验警告 | 空（跳过校验） |
 
 ## 部署
 
