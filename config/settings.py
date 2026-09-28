@@ -97,13 +97,3 @@ LOGOUT_REDIRECT_URL = "login"
 
 # nginx 等反代后还原真实协议（file_serve 超链接、CSRF 判断依赖它）
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-
-# 华为云增值税发票 OCR 预填凭据；任一为空则预填关闭
-OCR_DOMAIN = os.environ.get("OCR_DOMAIN", "")
-OCR_USERNAME = os.environ.get("OCR_USERNAME", "")
-OCR_PASSWORD = os.environ.get("OCR_PASSWORD", "")
-OCR_REGION = os.environ.get("OCR_REGION", "cn-north-4")
-
-# 期望的发票抬头/税号；为空则跳过该项校验
-EXPECTED_INVOICE_TITLE = os.environ.get("EXPECTED_INVOICE_TITLE", "").strip()
-EXPECTED_INVOICE_TAX_ID = os.environ.get("EXPECTED_INVOICE_TAX_ID", "").strip()

@@ -12,46 +12,9 @@
       {{ field.errors }}
       {{ field }}
       {% if field.help_text %}<div class="helptext">{{ field.help_text }}</div>{% endif %}
-      {% if field.name == "invoice_file" %}
-        <div class="helptext" id="ocr-hint" style="display:none"></div>
-      {% endif %}
     {% endfor %}
     <button type="submit">{% if is_create %}提交{% else %}保存{% endif %}</button>
     <a href="{% url 'board' %}" style="margin-left:10px;font-size:14px;color:#57606a">取消</a>
   </form>
 </div>
-
-<script>
-(function () {
-  var input = document.getElementById("{{ form.invoice_file.id_for_label }}");
-  var hint = document.getElementById("ocr-hint");
-  var amount = document.getElementById("{{ form.invoice_amount.id_for_label }}");
-  var invoiceNo = document.getElementById("{{ form.invoice_no.id_for_label }}");
-  if (!input) return;
-  input.addEventListener("change", function () {
-    var file = input.files && input.files[0];
-    if (!file) return;
-    if (!/^image\/(jpe?g|png)$/.test(file.type)) {
-      if (hint) { hint.style.display = "block"; hint.textContent = "PDF 等非图片票据不做自动识别，请手动填写发票金额/号码。"; }
-      return;
-    }
-    var data = new FormData();
-    data.append("image", file);
-    fetch("{% url 'ocr_prefill' %}", { method: "POST", body: data, credentials: "same-origin" })
-      .then(function (resp) { return resp.ok ? resp.json() : {}; })
-      .then(function (data) {
-        if (!hint) return;
-        hint.style.display = "block";
-        if (data && data.invoice_no) {
-          if (amount && data.invoice_amount != null && !amount.value) amount.value = data.invoice_amount;
-          if (invoiceNo && !invoiceNo.value) invoiceNo.value = data.invoice_no;
-          hint.textContent = "已自动识别发票金额与号码（" + (data.buyer_name || "抬头未识别") + "），请核对。";
-        } else {
-          hint.textContent = "自动识别不可用，请手动填写。";
-        }
-      })
-      .catch(function () { if (hint) { hint.style.display = "block"; hint.textContent = "自动识别失败，请手动填写。"; } });
-  });
-})();
-</script>
 {% endblock %}

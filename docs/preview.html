@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>报销看板 - 界面组件预览</title>
+  <!-- 组件样式与 core/templates/core/base.html 逐字一致 -->
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2328; }
+    nav { background: #1f6feb; color: #fff; padding: 0 16px; display: flex; align-items: center; gap: 16px; height: 48px; }
+    nav a { color: #fff; text-decoration: none; font-size: 14px; }
+    nav .brand { font-weight: 700; font-size: 16px; margin-right: 8px; }
+    nav .spacer { flex: 1; }
+    main { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+    .messages { list-style: none; padding: 0; margin: 0 0 16px; }
+    .messages li { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 14px; }
+    .messages .warning { background: #fff8c5; border: 1px solid #d4a72c; color: #7d4e00; }
+    .messages .success { background: #dafbe1; border: 1px solid #4ac26b; color: #116329; }
+    .messages .error { background: #ffebe9; border: 1px solid #ff818266; color: #a40e26; }
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .item { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; font-size: 14px; }
+    .item .title { font-weight: 600; margin-bottom: 6px; word-break: break-all; }
+    .item .meta { color: #57606a; margin-bottom: 6px; }
+    .item .amount { font-size: 18px; font-weight: 700; }
+    .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid; }
+    .badge.pending { color: #7d4e00; border-color: #d4a72c; background: #fff8c5; }
+    .badge.approved { color: #116329; border-color: #4ac26b; background: #dafbe1; }
+    .badge.rejected { color: #a40e26; border-color: #ff8182; background: #ffebe9; }
+    .item .links { margin-top: 8px; display: flex; gap: 10px; }
+    .item .links a { color: #1f6feb; text-decoration: none; font-size: 13px; }
+    form.stack label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+    form.stack input, form.stack select { width: 100%; max-width: 420px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; }
+    form.stack .helptext { font-size: 12px; color: #57606a; margin-top: 2px; }
+    .errorlist { color: #a40e26; font-size: 13px; list-style: none; padding: 0; margin: 4px 0 0; }
+    button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; font-size: 14px; cursor: pointer; margin-top: 16px; }
+    button.secondary { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; }
+    .filters a { color: #1f6feb; text-decoration: none; margin-right: 10px; font-size: 14px; }
+    .filters a.active { font-weight: 700; }
+    h1 { font-size: 20px; } h2 { font-size: 16px; margin: 20px 0 10px; }
+    /* 预览页专用外壳样式，与应用组件无关 */
+    .pv-note { max-width: 1100px; margin: 16px auto 0; padding: 0 16px; font-size: 13px; color: #57606a; }
+    .pv-section { border-top: 2px dashed #d0d7de; margin-top: 40px; padding-top: 8px; }
+    .pv-label { font-size: 12px; color: #57606a; letter-spacing: 1px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+<p class="pv-note">组件样式取自 <code>core/templates/core/base.html</code>，与线上渲染一致。以下为关键组件模块示例数据。</p>
+
+<div class="pv-section">
+  <p class="pv-label">导航栏（管理员登录态）</p>
+  <nav>
+    <span class="brand">报销看板</span>
+    <a href="#">看板</a>
+    <a href="#">提交条目</a>
+    <a href="#">导出 Excel</a>
+    <a href="#">导出 zip</a>
+    <a href="#">后台</a>
+    <span class="spacer"></span>
+    <span>欧阳嘉宏</span>
+    <button class="secondary" style="margin:0;padding:4px 12px" type="button">退出</button>
+  </nav>
+</div>
+
+<div class="pv-section">
+  <p class="pv-label">消息提示（保存后校验警告 / 成功 / 错误）</p>
+  <main style="margin-top:12px">
+    <ul class="messages">
+      <li class="warning">警告：实付金额 36.50 与发票金额 40.00 不一致，请核对。</li>
+      <li class="success">条目已保存。</li>
+      <li class="error">支付截图缺失，请补充后重试。</li>
+    </ul>
+  </main>
+</div>
+
+<div class="pv-section">
+  <p class="pv-label">看板（状态过滤 + 类别分组 + 条目卡）</p>
+  <main style="margin-top:12px">
+    <h1>报销看板</h1>
+    <div class="filters" style="margin-bottom:8px">
+      <a href="#" class="active">全部</a>
+      <a href="#">待审核</a>
+      <a href="#">已通过</a>
+      <a href="#">已退回</a>
+    </div>
+    <h2>交通（3）</h2>
+    <div class="items">
+      <div class="item">
+        <div class="title">高铁票 广州南-长沙南</div>
+        <div class="meta">付款人：欧阳嘉宏 · 订单号 4202692888202609281234</div>
+        <span class="amount">¥553.00</span><span class="meta">（发票 ¥553.00）</span>
+        <div style="margin-top:6px"><span class="badge approved">已通过</span></div>
+        <div class="links">
+          <a href="#">支付截图</a>
+          <a href="#">票据</a>
+          <a href="#">编辑</a>
+        </div>
+      </div>
+      <div class="item">
+        <div class="title">市内打车</div>
+        <div class="meta">付款人：欧阳嘉宏 · 订单号 2026092822001445567</div>
+        <span class="amount">¥36.50</span>
+        <div style="margin-top:6px"><span class="badge pending">待审核</span></div>
+        <div class="links">
+          <a href="#">支付截图</a>
+          <a href="#">票据</a>
+          <a href="#">编辑</a>
+        </div>
+      </div>
+      <div class="item">
+        <div class="title">地铁充值</div>
+        <div class="meta">付款人：欧阳嘉宏 · 订单号 2026092110013398821</div>
+        <span class="amount">¥100.00</span>
+        <div style="margin-top:6px"><span class="badge rejected">已退回</span></div>
+        <div class="links">
+          <a href="#">支付截图</a>
+          <a href="#">票据</a>
+          <a href="#">编辑</a>
+        </div>
+      </div>
+    </div>
+    <h2>图书资料（0）</h2>
+    <div class="meta" style="color:#57606a;font-size:14px">暂无条目</div>
+  </main>
+</div>
+
+<div class="pv-section">
+  <p class="pv-label">提交表单（必填标记 + 帮助文本）</p>
+  <main style="margin-top:12px">
+    <div class="card" style="max-width:520px">
+      <h1>提交报销条目</h1>
+      <form class="stack" onsubmit="return false">
+        <label for="pv-cat">类别 *</label>
+        <select id="pv-cat"><option>交通</option><option>图书资料</option><option>耗材</option></select>
+        <label for="pv-title">标题 *</label>
+        <input id="pv-title" value="高铁票 广州南-长沙南">
+        <label for="pv-order">支付订单号 *</label>
+        <input id="pv-order" value="4202692888202609281234">
+        <label for="pv-amount">实付金额 *</label>
+        <input id="pv-amount" value="553.00">
+        <label for="pv-invoice">发票文件 *</label>
+        <input id="pv-invoice" type="file">
+        <label for="pv-pay">支付截图 *</label>
+        <input id="pv-pay" type="file">
+        <div class="helptext">支持 jpg / png / pdf；图片将做深色检测，避免误传收款码。</div>
+        <button type="submit">提交</button>
+        <a href="#" style="margin-left:10px;font-size:14px;color:#57606a">取消</a>
+      </form>
+    </div>
+  </main>
+</div>
+
+<div class="pv-section">
+  <p class="pv-label">登录</p>
+  <main style="margin-top:12px">
+    <div class="card" style="max-width:420px">
+      <h1>登录</h1>
+      <form class="stack" onsubmit="return false">
+        <label for="pv-user">用户名</label>
+        <input id="pv-user" value="ouyangjiahong22">
+        <label for="pv-pass">密码</label>
+        <input id="pv-pass" type="password">
+        <button type="submit">登录</button>
+      </form>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
