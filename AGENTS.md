@@ -11,18 +11,20 @@ Django 5.2 项目，项目配置包 `config`，唯一 app `core`，全函数视�
   │                     ├─ board：按 Category.order 分组看板，?status= 过滤
   │                     ├─ item_create/item_update：ModelForm + 文件上传
   │                     ├─ file_serve：/items/<pk>/file/<kind>/ 鉴权下发（ADR-0002）
+  │                     ├─ prefill：发票图片 → DeepSeek 识图 → JSON 预填
   │                     └─ export_excel/export_zip（staff only）：approved 条目导出
   └─ /admin/：条目审核（改 status）、类别管理
-core.validation.check_item：两条警告规则（金额、深色截图），保存后共用，不阻断
+core.validation.check_item：三条警告规则（金额、深色截图、抬头/税号），保存后共用，不阻断
 ```
 
 关键约定：
 - 媒体文件（发票/截图）**不经 nginx**，全部走 `file_serve` 鉴权路由（ADR-0002）。
 - 导出只含 `status="approved"` 条目；Excel 格式对照人工汇总表（全局连续序号、A 列小记/合计标签、D 列 SUM 公式）。
+- DeepSeek 凭据与期望抬头/税号走环境变量，缺省静默降级，不报错。
 
 ## Key Directories
 - `config/` — settings/urls/wsgi/asgi；settings 全环境变量驱动
-- `core/` — models（Category、Item）、views、forms、validation、admin、templates/core/
+- `core/` — models（Category、Item）、views、forms、validation、vision、admin、templates/core/
 - `docs/agents/` — 工程技能 harness 配置（issue tracker、分诊标签、领域文档约定）
 - `docs/adr/` — 架构决策记录；`CONTEXT.md` — 领域术语表
 
@@ -39,7 +41,7 @@ uv run python manage.py test
 ## Code Conventions
 - 函数视图 + `ModelForm`；权限用 `login_required` / `user_passes_test`，越权改他人条目抛 `PermissionDenied`（403）。
 - 付款人 = `owner`（Django user），真实姓名存 `first_name`，账号开通时由管理员填写；不建 Person/Student 模型。
-- 警告类业务规则唯一实现在 `core/validation.py: check_item(item)`，前端不重复实现规则本体。
+- 警告类业务规则唯一实现在 `core/validation.py: check_item(item, prefill_data=None)`，前端不重复实现规则本体。
 - 中文 verbose_name/choices，英文标识符。
 
 ## Deployment
