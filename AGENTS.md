@@ -1,30 +1,34 @@
 # AGENTS.md
 
 ## Project Overview
-报销看板（发票报销管理）：账号由管理员在后台开通（用户名 = 姓名拼音+年级，如 ouyangjiahong22），学生登录后自助提交报销条目（发票文件 + 支付截图 + 支付订单号 + 实付金额），按类别共享看板展示，只能修改自己的条目；管理员在 Django admin 审核，通过后一键导出用户格式 Excel（按类别小记+合计）与票据 zip。中文界面（`zh-hans`），服务端渲染，无前端构建链。**开放注册已关闭（ADR-0003）**。
+报销看板（发票报销管理）：账号由管理员在后台开通（用户名 = 姓名拼音+年级，如 ouyangjiahong22），学生登录后自助提交报销条目（发票/支付记录/退款记录附件 + AI 识别回填 + 实付金额），按类别共享看板展示，只能修改自己的条目；管理员在 Django admin 审核，通过后一键导出用户格式 Excel（按类别小记+合计）与票据 zip。中文界面（`zh-hans`），服务端渲染，无前端构建链。**开放注册已关闭（ADR-0003）**。
 
 ## Architecture & Data Flow
-Django 5.2 项目，项目配置包 `config`，唯一 app `core`，全函数视图 + Django 模板。
+Django 6.1 项目，项目配置包 `config`，唯一 app `core`，全函数视图 + Django 模板。
 
 ```
 浏览器 ──注册/登录──> core.views（函数视图）
   │                     ├─ board：按 Category.order 分组看板，?status= 过滤
-  │                     ├─ item_create/item_update：ModelForm + 文件上传
-  │                     ├─ file_serve：/items/<pk>/file/<kind>/ 鉴权下发（ADR-0002）
-  │                     ├─ prefill：发票图片 → DeepSeek 识图 → JSON 预填
+  │                     ├─ item_create/item_update：ItemForm + 多附件上传（invoices/payments/refunds）
+  │                     ├─ attachment_update/attachment_delete：已保存附件行内编辑/删除
+  │                     ├─ file_serve：/items/attachments/<pk>/file/ 鉴权下发（ADR-0002）
+  │                     ├─ prefill：附件文件 → DeepSeek 识别 → JSON 回填（无状态）
   │                     └─ export_excel/export_zip（staff only）：approved 条目导出
-  └─ /admin/：条目审核（改 status）、类别管理
-core.validation.check_item：三条警告规则（金额、深色截图、抬头/税号），保存后共用，不阻断
+  └─ /admin/：条目审核（改 status）、类别管理（含 description 参考说明）
+core.validation.check_item：五条警告规则（附件合计、实付>发票、平台单号、深色支付记录、抬头/税号），保存后共用，不阻断
 ```
 
 关键约定：
-- 媒体文件（发票/截图）**不经 nginx**，全部走 `file_serve` 鉴权路由（ADR-0002）。
+- 条目下可有多个 `Attachment`（kind ∈ invoice/payment/refund），金额与号码（平台单号/商户单号/发票号码）挂在附件上，见 ADR-0005。
+- 实付款 = 支付记录合计 − 退款记录合计；发票金额 = 发票附件合计；页面自动回填、服务端 `check_item` 核对一致性。
+- 媒体文件（发票/支付记录）**不经 nginx**，全部走 `file_serve` 鉴权路由（ADR-0002）。
 - 导出只含 `status="approved"` 条目；Excel 格式对照人工汇总表（全局连续序号、A 列小记/合计标签、D 列 SUM 公式）。
 - DeepSeek 凭据与期望抬头/税号走环境变量，缺省静默降级，不报错。
+- 附件变化经 `core.audit.mark_attachments` 注入快照，仍由 Item 信号统一落 `AuditLog`。
 
 ## Key Directories
 - `config/` — settings/urls/wsgi/asgi；settings 全环境变量驱动
-- `core/` — models（Category、Item）、views、forms、validation、vision、admin、templates/core/
+- `core/` — models（Category、Item、Attachment、AuditLog）、views、forms、validation、vision、audit、admin、templates/core/
 - `docs/agents/` — 工程技能 harness 配置（issue tracker、分诊标签、领域文档约定）
 - `docs/adr/` — 架构决策记录；`CONTEXT.md` — 领域术语表
 

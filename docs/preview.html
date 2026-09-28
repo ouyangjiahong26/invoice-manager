@@ -39,6 +39,38 @@
     .filters a { color: #1f6feb; text-decoration: none; margin-right: 10px; font-size: 14px; }
     .filters a.active { font-weight: 700; }
     h1 { font-size: 20px; } h2 { font-size: 16px; margin: 20px 0 10px; }
+    h3 { font-size: 14px; margin: 16px 0 6px; }
+    .ai-summary { border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 12px; font-size: 13px; background: #f6f8fa; margin-bottom: 12px; }
+    .ai-summary.warn { background: #fff8c5; border-color: #d4a72c; color: #7d4e00; }
+    .ai-summary.ok { background: #dafbe1; border-color: #4ac26b; color: #116329; }
+    .attach-block { margin-top: 14px; }
+    .attach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 8px; }
+    .attach-card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 10px; font-size: 13px; }
+    .attach-card .attach-preview { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; height: 320px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    .attach-card .attach-preview img { max-width: 100%; max-height: 100%; }
+    .attach-card .attach-preview iframe { width: 100%; height: 100%; border: 0; }
+    .attach-card .attach-name { margin: 8px 0 4px; font-weight: 600; word-break: break-all; }
+    .attach-status { font-size: 12px; color: #57606a; }
+    .attach-status.ok { color: #116329; }
+    .attach-status.warn { color: #7d4e00; }
+    .attach-field { display: block; font-size: 12px; color: #57606a; font-weight: 400; margin: 6px 0 0; }
+    .attach-field input { width: 100%; max-width: none; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
+    .suggest { background: #ddf4ff; border: 1px solid #54aeff66; border-radius: 6px; padding: 4px 8px; margin-top: 6px; font-size: 12px; color: #0a3069; display: flex; align-items: center; gap: 8px; }
+    .suggest button { margin: 0; padding: 2px 8px; font-size: 12px; }
+    .timeline { margin-top: 8px; font-size: 12px; color: #57606a; }
+    .timeline div { margin-top: 2px; }
+    .reconcile { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
+    .reconcile .line { margin-top: 4px; }
+    .reconcile .ok { color: #116329; }
+    .reconcile .warn { color: #7d4e00; }
+    .reconcile .muted { color: #57606a; }
+    .submit-hint { font-size: 13px; color: #7d4e00; margin-left: 10px; }
+    button.small { padding: 4px 10px; font-size: 12px; margin-top: 6px; }
+    button.danger { background: #cf222e; }
+    .attach-actions { display: flex; gap: 8px; align-items: center; }
+    form.attach-row-form { margin-top: 6px; }
+    form.attach-row-form label { display: block; font-size: 12px; color: #57606a; margin-top: 6px; }
+    form.attach-row-form input, form.attach-row-form select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
     /* 预览页专用外壳样式，与应用组件无关 */
     .pv-note { max-width: 1100px; margin: 16px auto 0; padding: 0 16px; font-size: 13px; color: #57606a; }
     .pv-section { border-top: 2px dashed #d0d7de; margin-top: 40px; padding-top: 8px; }
@@ -67,9 +99,9 @@
   <p class="pv-label">消息提示（保存后校验警告 / 成功 / 错误）</p>
   <main style="margin-top:12px">
     <ul class="messages">
-      <li class="warning">警告：实付金额 36.50 与发票金额 40.00 不一致，请核对。</li>
-      <li class="success">条目已保存。</li>
-      <li class="error">支付截图缺失，请补充后重试。</li>
+      <li class="warning">警告：支付与退款附件合计与填写的实付款不一致，请核对。</li>
+      <li class="success">已提交，等待管理员审核。</li>
+      <li class="error">附件保存失败：请输入合法数字。</li>
     </ul>
   </main>
 </div>
@@ -88,33 +120,33 @@
     <div class="items">
       <div class="item">
         <div class="title">高铁票 广州南-长沙南</div>
-        <div class="meta">付款人：欧阳嘉宏 · 订单号 4202692888202609281234</div>
+        <div class="meta">付款人：欧阳嘉宏 · 平台单号 4202692888202609281234</div>
         <span class="amount">¥553.00</span><span class="meta">（发票 ¥553.00）</span>
         <div style="margin-top:6px"><span class="badge approved">已通过</span></div>
         <div class="links">
-          <a href="#">支付截图</a>
+          <a href="#">支付记录</a>
           <a href="#">票据</a>
           <a href="#">编辑</a>
         </div>
       </div>
       <div class="item">
         <div class="title">市内打车</div>
-        <div class="meta">付款人：欧阳嘉宏 · 订单号 2026092822001445567</div>
+        <div class="meta">付款人：欧阳嘉宏 · 平台单号 2026092822001445567</div>
         <span class="amount">¥36.50</span>
         <div style="margin-top:6px"><span class="badge pending">待审核</span></div>
         <div class="links">
-          <a href="#">支付截图</a>
+          <a href="#">支付记录</a>
           <a href="#">票据</a>
           <a href="#">编辑</a>
         </div>
       </div>
       <div class="item">
         <div class="title">地铁充值</div>
-        <div class="meta">付款人：欧阳嘉宏 · 订单号 2026092110013398821</div>
+        <div class="meta">付款人：欧阳嘉宏 · 平台单号 2026092110013398821</div>
         <span class="amount">¥100.00</span>
         <div style="margin-top:6px"><span class="badge rejected">已退回</span></div>
         <div class="links">
-          <a href="#">支付截图</a>
+          <a href="#">支付记录</a>
           <a href="#">票据</a>
           <a href="#">编辑</a>
         </div>
@@ -126,27 +158,101 @@
 </div>
 
 <div class="pv-section">
-  <p class="pv-label">提交表单（必填标记 + 帮助文本 + 自动预填提示样例）</p>
+  <p class="pv-label">提交表单（字段帮助文本 + AI 汇总条 + 多附件卡片 + 页内对照）</p>
   <main style="margin-top:12px">
-    <div class="card" style="max-width:520px">
+    <div class="card" style="max-width:900px">
       <h1>提交报销条目</h1>
+      <div class="ai-summary warn">已识别 2/3 张 · 待确认建议 1 条 · 单号已互配 · 待人工核对</div>
       <form class="stack" onsubmit="return false">
+        <label for="pv-title">明细 *</label>
+        <input id="pv-title" value="夸克网盘会员">
+        <div class="helptext">买了什么，如：夸克网盘会员、DeepSeek API 词元；多本书用顿号连接书名</div>
         <label for="pv-cat">类别 *</label>
-        <select id="pv-cat"><option>交通</option><option>图书资料</option><option>耗材</option></select>
-        <label for="pv-title">标题 *</label>
-        <input id="pv-title" value="高铁票 广州南-长沙南">
-        <label for="pv-order">支付订单号 *</label>
-        <input id="pv-order" value="4202692888202609281234">
-        <label for="pv-amount">实付金额 *</label>
-        <input id="pv-amount" value="553.00">
-        <label for="pv-invoice">发票文件 *</label>
-        <input id="pv-invoice" type="file">
-        <div class="helptext">已自动识别发票金额与号码（某某科技有限公司），请核对。</div>
-        <label for="pv-pay">支付截图 *</label>
-        <input id="pv-pay" type="file">
-        <div class="helptext">支持 jpg / png / pdf；图片将做深色检测，避免误传收款码。</div>
-        <button type="submit">提交</button>
-        <a href="#" style="margin-left:10px;font-size:14px;color:#57606a">取消</a>
+        <select id="pv-cat"><option>信息服务费</option><option>竞赛报名费</option><option>书籍</option></select>
+        <div class="helptext">信息服务费：API/会员类；书籍：书价+快递费</div>
+        <label for="pv-amount">实付款 *</label>
+        <input id="pv-amount" value="148.40">
+        <div class="helptext">自己实际掏的钱 = 支付合计 − 退款。有优惠/立减按实付填（发票 19.90、花呗立减后实付 19.72 → 填 19.72）</div>
+        <label for="pv-invoice-amount">发票金额</label>
+        <input id="pv-invoice-amount" value="148.40">
+        <div class="helptext">发票票面价税合计；多张发票会自动加总，也可手动修改</div>
+
+        <div class="attach-block">
+          <h3>发票（可多张）</h3>
+          <input id="pv-up-invoice" type="file" multiple>
+          <div class="attach-grid">
+            <div class="attach-card">
+              <div class="attach-preview"><span style="color:#57606a">PDF 预览（iframe）</span></div>
+              <div class="attach-body">
+                <div class="attach-name">44 发票67.70.pdf</div>
+                <div class="attach-status ok">已识别（来源：文本）</div>
+                <label class="attach-field">发票金额<input value="67.70"></label>
+                <label class="attach-field">发票号码<input value="24117000000012345678"></label>
+                <div class="timeline">
+                  <div>· 已选择文件 44 发票67.70.pdf</div>
+                  <div>· PDF 提文本成功</div>
+                  <div>· 识别完成，回填建议 2 项</div>
+                </div>
+                <div class="attach-actions"><button type="button" class="secondary small">移除</button></div>
+              </div>
+            </div>
+            <div class="attach-card">
+              <div class="attach-preview"><span style="color:#57606a">图片预览（img）</span></div>
+              <div class="attach-body">
+                <div class="attach-name">44 发票80.70.jpg</div>
+                <div class="attach-status warn">未识别，请手动填写</div>
+                <label class="attach-field">发票金额<input value=""></label>
+                <div class="attach-suggestions">
+                  <div class="suggest"><span>AI 建议 发票金额：80.70</span><button type="button">采用</button></div>
+                </div>
+                <div class="timeline">
+                  <div>· 已选择文件 44 发票80.70.jpg</div>
+                  <div>· 图像识别</div>
+                  <div>· 识别完成，回填建议 1 项</div>
+                </div>
+                <div class="attach-actions"><button type="button" class="secondary small">移除</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="attach-block">
+          <h3>支付记录（可多笔）</h3>
+          <input id="pv-up-payment" type="file" multiple>
+          <div class="attach-grid">
+            <div class="attach-card">
+              <div class="attach-preview"><span style="color:#57606a">PDF 预览（iframe）</span></div>
+              <div class="attach-body">
+                <div class="attach-name">44 支付记录148.40.pdf</div>
+                <div class="attach-status ok">已识别（来源：文本）</div>
+                <label class="attach-field">支付金额<input value="148.40"></label>
+                <label class="attach-field">平台单号<input value="2026092822001445567000"></label>
+                <label class="attach-field">商户单号<input value="JD20260928001"></label>
+                <div class="timeline">
+                  <div>· 已选择文件 44 支付记录148.40.pdf</div>
+                  <div>· PDF 提文本成功</div>
+                  <div>· 识别完成，回填建议 3 项</div>
+                </div>
+                <div class="attach-actions"><button type="button" class="secondary small">移除</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <details class="attach-block">
+          <summary>有退款？点击展开</summary>
+        </details>
+
+        <div class="reconcile">
+          <div class="line">发票 <b>2</b> 张，合计 <b>¥148.40</b>；支付 <b>1</b> 笔，合计 <b>¥148.40</b>；退款 <b>¥0.00</b>；净额 <b>¥148.40</b></div>
+          <div class="line ok">单号已互配</div>
+        </div>
+
+        <div>
+          <button type="submit">提交</button>
+          <span class="submit-hint">有事项待核对（不阻断提交）</span>
+          <a href="#" style="margin-left:10px;font-size:14px;color:#57606a">取消</a>
+        </div>
       </form>
     </div>
   </main>
