@@ -98,3 +98,12 @@ LOGOUT_REDIRECT_URL = "login"
 
 # nginx 等反代后还原真实协议（file_serve 超链接、CSRF 判断依赖它）
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# DeepSeek 识图预填；DEEPSEEK_API_KEY 为空时预填整体关闭
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+
+# 期望的发票抬头/税号；为空则跳过该项校验
+EXPECTED_INVOICE_TITLE = os.environ.get("EXPECTED_INVOICE_TITLE", "").strip()
+EXPECTED_INVOICE_TAX_ID = os.environ.get("EXPECTED_INVOICE_TAX_ID", "").strip()

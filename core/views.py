@@ -4,7 +4,7 @@ from itertools import groupby
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.core.exceptions import PermissionDenied
-from django.http import FileResponse, Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -17,6 +17,7 @@ import zipfile
 from .forms import ItemForm
 from .models import Category, Item
 from .validation import check_item
+from .vision import ALLOWED_CONTENT_TYPES, MAX_IMAGE_BYTES, prefill as vision_prefill
 
 STATUS_FILTERS = {Item.STATUS_PENDING, Item.STATUS_APPROVED, Item.STATUS_REJECTED}
 AMOUNT_FORMAT = "0.00_ "
@@ -43,7 +44,8 @@ def item_create(request):
             item = form.save(commit=False)
             item.owner = request.user
             item.save()
-            for warning in check_item(item):
+            prefill_data = request.session.pop("item_prefill", None)
+            for warning in check_item(item, prefill_data):
                 messages.warning(request, warning)
             messages.success(request, "已提交，等待管理员审核。")
             return redirect("board")
@@ -62,7 +64,8 @@ def item_update(request, pk):
         form = ItemForm(request.POST, request.FILES, instance=item)
         if form.is_valid():
             item = form.save()
-            for warning in check_item(item):
+            prefill_data = request.session.pop("item_prefill", None)
+            for warning in check_item(item, prefill_data):
                 messages.warning(request, warning)
             messages.success(request, "已更新。")
             return redirect("board")
@@ -90,6 +93,20 @@ def file_serve(request, pk, kind):
     if kind not in fields or not fields[kind]:
         raise Http404
     return FileResponse(fields[kind].open("rb"))
+
+
+@require_POST
+@login_required
+def prefill(request):
+    upload = request.FILES.get("image")
+    if upload is None:
+        return HttpResponse("缺少 image 字段", status=400)
+    if upload.content_type not in ALLOWED_CONTENT_TYPES or upload.size > MAX_IMAGE_BYTES:
+        return HttpResponse("仅支持 10MB 内的 jpg/png", status=400)
+    data = vision_prefill(upload.read())
+    if data:
+        request.session["item_prefill"] = data
+    return JsonResponse(data)
 
 
 def _staff(user):
