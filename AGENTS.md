@@ -1,66 +1,59 @@
 # Repository Guidelines
 
 ## Project Overview
-Personal invoice (发票) management tool: ingests Chinese VAT-invoice PDFs, extracts fields via Huawei Cloud OCR, and manages them through a Django admin (categorize, mark used, batch print/export). Chinese-language UI (`zh-hans`), admin-centric — there is no custom front-end app.
+报销看板（发票报销管理）：学生注册登录后自助提交报销条目（发票文件 + 支付截图 + 支付订单号 + 实付金额），按类别共享看板展示，只能修改自己的条目；管理员在 Django admin 审核，通过后一键导出用户格式 Excel（按类别小记+合计）与票据 zip。中文界面（`zh-hans`），服务端渲染，无前端构建链。
 
 ## Architecture & Data Flow
-Django 3.1 project, one app (`manager`), admin-first design. Ingestion happens **outside** the request cycle:
+Django 5.2 项目，项目配置包 `config`，唯一 app `core`，全函数视图 + Django 模板。
 
 ```
-./import/*.pdf
-  → python import_invoice.py          (standalone script; django.setup() bootstrap)
-    → Wand/ImageMagick rasterizes PDF → 300dpi PNG → base64
-    → Huawei Cloud OCR /v1.0/ocr/vat-invoice  (HWOcrClientToken, region cn-north-4)
-    → creates manager.Invoice row
-    → renames/moves PDF to ./invoices/<发票号>.pdf
-/admin/ (simpleui skin)               → categorize, mark used, sum selected prices
-manager/views.py                      → read PDFs back from disk:
-    merge_invoices/  ?ids=… → PyPDF4-merged single PDF response
-    dump_invoices/   ?ids=… → zip attachment invoice_dump.zip ({category}_{id}.pdf)
+浏览器 ──注册/登录──> core.views（函数视图）
+  │                     ├─ board：按 Category.order 分组看板，?status= 过滤
+  │                     ├─ item_create/item_update：ModelForm + 文件上传
+  │                     ├─ file_serve：/items/<pk>/file/<kind>/ 鉴权下发（ADR-0002）
+  │                     ├─ ocr_prefill：发票图片 → 华为云 VAT OCR → JSON 预填
+  │                     └─ export_excel/export_zip（staff only）：approved 条目导出
+  └─ /admin/：条目审核（改 status）、类别管理
+core.validation.check_item：三条警告规则（金额、深色截图、抬头/税号），保存前后端共用，不阻断
 ```
 
-Key invariants:
-- Invoice **PDFs live on the filesystem** (`settings.INVOICES_PATH`), not Django media/static; DB rows reference them by id only.
-- `settings.IMPORT_PATH` (`./import`) and `INVOICES_PATH` (`./invoices`) are paths **relative to CWD** — scripts must run from repo root.
-- OCR credentials are hardcoded placeholders (`xxx`) at module level in `import_invoice.py` — edit there to configure; no env-var support.
+关键约定：
+- 媒体文件（发票/截图）**不经 nginx**，全部走 `file_serve` 鉴权路由（ADR-0002）。
+- 导出只含 `status="approved"` 条目；Excel 格式对照人工汇总表（全局连续序号、A 列小记/合计标签、D 列 SUM 公式）。
+- OCR 凭据与期望抬头/税号全部走环境变量，缺省时功能静默降级，不报错。
 
 ## Key Directories
-- `manager/` — the only Django app: `models.py`, `views.py`, `urls.py`, `admin.py`, `templates/`, `migrations/`
-- `invoice_manager/` — project config: `settings.py`, `urls.py` (root URLconf), `wsgi.py`, `asgi.py`
-- `huaweicloud_ocr_sdk/` — **vendored** Huawei OCR SDK (not pip-installed, not a Django app): `HWOcrClientToken.py` (IAM token auth; the only client the app uses), `HWOcrClientAKSK.py` + `apig_sdk/signer.py` (AK/SK signing, demo-only), `OCRDemo.py`/`AutoClassificationDemo.py` (samples with test images in `data/`)
-- `./import/`, `./invoices/` — runtime data dirs (gitignored, created at CWD)
+- `config/` — settings/urls/wsgi/asgi；settings 全环境变量驱动
+- `core/` — models（Category、Item）、views、forms、validation、ocr、admin、templates/core/
+- `huaweicloud_ocr_sdk/` — vendored 华为云 SDK，仅保留 `HWOcrClientToken.py`（IAM token 客户端，唯一复用的旧代码）
+- `docs/agents/` — 工程技能 harness 配置（issue tracker、分诊标签、领域文档约定）
+- `docs/adr/` — 架构决策记录；`CONTEXT.md` — 领域术语表
 
 ## Development Commands
 ```bash
-pip install -r requirements.txt        # deps: Django~=3.1.3, PyPDF4~=1.27.0, Wand~=0.6.3, requests~=2.25.0
-python manage.py migrate
-python manage.py runserver             # admin at http://127.0.0.1:8000/admin/ (default admin/admin)
-python import_invoice.py               # batch-ingest PDFs from ./import/
-python manage.py makemigrations manager
-python manage.py test                  # runs, but test suite is an empty stub
+uv venv --python 3.12                 # 或 python3.12 -m venv .venv
+uv pip install -r requirements.txt
+uv run python manage.py migrate
+uv run python manage.py runserver     # http://127.0.0.1:8000/
+uv run python manage.py makemigrations core
+uv run python manage.py test
 ```
-System prerequisites for Wand: **ImageMagick + Ghostscript** must be installed (Windows installer: check "Install development headers and libraries").
 
-## Code Conventions & Common Patterns
-- **Function-based views** taking `request.GET['ids']` (comma-separated invoice ids); no DRF, no forms, no class-based views.
-- **Admin is the UI**: `manager/admin.py` `InvoiceAdmin` uses `list_display`/`list_filter`/`search_fields`; admin actions are **dynamically generated** via `compile()` + `FunctionType` from source strings (per-category update actions, `use_invoices`). Changelist template overridden at `manager/templates/admin/manager/actions.html` (jQuery price summation); `manager/templates/use_invoices.html` is a JS-only redirect page.
-- **Single model** `manager.Invoice`: CharField primary key `id` (发票号码), `company_name`, `company_id`, `price` (FloatField), `used` (Boolean), `category` with choices 交通费/餐饮费/未选择. Change → `makemigrations`.
-- File responses via `FileResponse`/`HttpResponse` with `zipfile`/`PyPDF4` in-memory buffers.
-- Error handling is minimal — OCR/network failures and missing files are not caught; preserve caller behavior when editing `import_invoice.py`.
-- Naming: Chinese field labels/choices in models and templates; English identifiers in code.
+## Code Conventions
+- 函数视图 + `ModelForm`；权限用 `login_required` / `user_passes_test`，越权改他人条目抛 `PermissionDenied`（403）。
+- 付款人 = `owner`（Django user），真实姓名存 `first_name`，注册时必填；不建 Person/Student 模型。
+- 警告类业务规则唯一实现在 `core/validation.py: check_item(item, ocr_data=None)`，前端不重复实现规则本体。
+- OCR 客户端每次请求实例化，失败重试 1 次后返回空 dict，不阻塞上传。
+- 中文 verbose_name/choices，英文标识符。
 
-## Important Files
-- `import_invoice.py` — OCR ingest pipeline; OCR result-dict parsing → `Invoice` fields; also enforces company_id/name match against a hardcoded value
-- `invoice_manager/settings.py` — `INSTALLED_APPS` (includes third-party `simpleui`), SQLite at `BASE_DIR/db.sqlite3`, `DEBUG=True`, `IMPORT_PATH`/`INVOICES_PATH` constants (lines ~119-120)
-- `manager/admin.py` — all admin actions incl. the `compile()`-based generator
-- `manager/views.py` — `merge_invoices`, `dump_invoices`
-- `huaweicloud_ocr_sdk/HWOcrClientToken.py` — token client: IAM login → X-Subject-Token, auto-refresh on 401/403, sends base64 image JSON to `ocr.<region>.myhuaweicloud.com`
-
-## Runtime/Tooling Preferences
-- **Python + pip only**; `requirements.txt` with `~=` compatible-release pins. No lockfile, no virtualenv config, no Docker/Makefile/CI, no linter/formatter config — don't introduce one unless asked.
-- Django 3.1-era code (function views, `django.setup()` manual bootstrap); avoid modern-Django-only APIs unless also pinning an upgrade.
-- Vendored SDKs (`huaweicloud_ocr_sdk/`, `apig_sdk/`) are upstream samples — treat as third-party; don't refactor them into app code.
+## Deployment
+腾讯云（`ssh jump`）：`/home/ubuntu/baoxiao`（git pull 更新）+ `.venv` + systemd `baoxiao.service`（gunicorn 127.0.0.1:8100，`EnvironmentFile=.env`）+ PostgreSQL `baoxiao` 库 + nginx vhost `/etc/nginx/sites-enabled/baoxiao`（443 反代，80 仅 acme-challenge+301）+ acme.sh 证书（`/home/ubuntu/acme-invoice/`）。域名 `invoice.cislunarspace.cn`。
 
 ## Testing & QA
-- No tests exist: `manager/tests.py` is the untouched scaffold stub. No pytest/coverage tooling configured.
-- If adding tests, use Django's built-in `TestCase` (`python manage.py test`); mock `HWOcrClientToken` and note that views/script depend on real files under `INVOICES_PATH`/`IMPORT_PATH` (no test seams currently).
+`python manage.py test`（Django TestCase）。涉及文件导出/上传的测试需构造临时 `MEDIA_ROOT`；OCR 依赖全部 mock（`core.ocr.prefill` 层面）。
+
+## Agent skills
+
+- **Issue tracker**：GitHub Issues（`gh` CLI），配置见 `docs/agents/issue-tracker.md`；GitHub Project #7 同步工作状态（`/github-project`、`/triage`、`/open-pr`、`/merge-pr` 读取）。
+- **分诊**：标签映射见 `docs/agents/triage-labels.md`（`/triage` 读取）。
+- **领域文档**：约定见 `docs/agents/domain.md`（`/domain-modeling`、`/grill-with-docs` 读取）；根目录 `CONTEXT.md` 为术语表，`docs/adr/` 为决策记录——输出领域概念时按术语表用词，与 ADR 冲突时显式标注。
