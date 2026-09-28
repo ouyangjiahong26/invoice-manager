@@ -14,7 +14,7 @@
   {% if items %}
     <div class="items">
       {% for item in items %}
-        <div class="item">
+        <div class="item clickable" data-detail="{{ item.pk }}">
           <div class="title">{{ item.title }}</div>
           <div class="meta">付款人：{{ item.payer_name }}{% if item.first_payment.order_no %} · 平台单号 {{ item.first_payment.order_no }}{% endif %}</div>
           <span class="amount">¥{{ item.actual_amount }}</span>
@@ -36,10 +36,59 @@
             {% endif %}
           </div>
         </div>
+        <dialog class="item-detail" id="item-detail-{{ item.pk }}">
+          <div class="detail-head">
+            <span class="title">{{ item.title }}</span>
+            <span class="meta">{{ item.category.name }} · 付款人：{{ item.payer_name }}</span>
+            <span class="amount">¥{{ item.actual_amount }}</span>
+            {% if item.invoice_amount %}<span class="meta">（发票 ¥{{ item.invoice_amount }}）</span>{% endif %}
+            <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
+            <span class="meta">{{ item.created_at|date:"Y-m-d" }} 提交</span>
+            <span class="spacer"></span>
+            {% if item.owner_id == user.id or user.is_staff %}
+              <a href="{% url 'item_update' item.pk %}">编辑</a>
+            {% endif %}
+          </div>
+          {% for kind, rows in item.attachment_groups.items %}
+            {% if rows %}
+              <h3>{{ rows.0.get_kind_display }}</h3>
+              <div class="attach-grid">
+                {% for row in rows %}
+                  <div class="attach-card">
+                    <div class="attach-preview">
+                      {% if row.is_pdf %}
+                        <iframe data-src="{% url 'file_serve' row.pk %}" title="{{ row.display_name }}"></iframe>
+                      {% else %}
+                        <img src="{% url 'file_serve' row.pk %}" alt="{{ row.display_name }}" loading="lazy">
+                      {% endif %}
+                    </div>
+                    <div class="attach-name">{{ row.display_name }}{% if row.amount %} · ¥{{ row.amount }}{% endif %}</div>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          {% endfor %}
+        </dialog>
       {% endfor %}
     </div>
   {% else %}
     <div class="meta" style="color:#57606a;font-size:14px">暂无条目</div>
   {% endif %}
 {% endfor %}
+
+<script>
+  // 点条目卡弹详情浮层；卡内编辑/删除等链接不触发
+  document.querySelectorAll(".item.clickable").forEach(card => {
+    card.addEventListener("click", e => {
+      if (e.target.closest(".links")) return;
+      const dlg = document.getElementById("item-detail-" + card.dataset.detail);
+      dlg.querySelectorAll("iframe[data-src]").forEach(f => { f.src = f.dataset.src; });
+      dlg.showModal();
+    });
+  });
+  // 点遮罩关闭（Esc 由 <dialog> 原生处理）
+  document.querySelectorAll("dialog.item-detail").forEach(dlg => {
+    dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+  });
+</script>
 {% endblock %}

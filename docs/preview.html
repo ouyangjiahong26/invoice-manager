@@ -71,6 +71,15 @@
     form.attach-row-form { margin-top: 6px; }
     form.attach-row-form label { display: block; font-size: 12px; color: #57606a; margin-top: 6px; }
     form.attach-row-form input, form.attach-row-form select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
+    /* 条目详情模态浮层（issue #13）：看板条目整卡可点，弹层按类型分组展示附件 */
+    .item.clickable { cursor: pointer; }
+    .item.clickable:hover { border-color: #1f6feb; }
+    .detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 12px; }
+    .detail-head .title { font-size: 18px; font-weight: 700; }
+    .detail-head .spacer { flex: 1; }
+    .detail-head a { color: #1f6feb; text-decoration: none; font-size: 13px; }
+    dialog.item-detail { border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; width: min(960px, 94vw); max-height: 86vh; overflow-y: auto; }
+    dialog.item-detail::backdrop { background: rgba(31, 35, 40, 0.45); }
     /* 预览页专用外壳样式，与应用组件无关 */
     .pv-note { max-width: 1100px; margin: 16px auto 0; padding: 0 16px; font-size: 13px; color: #57606a; }
     .pv-section { border-top: 2px dashed #d0d7de; margin-top: 40px; padding-top: 8px; }
@@ -156,6 +165,52 @@
     <div class="meta" style="color:#57606a;font-size:14px">暂无条目</div>
   </main>
 </div>
+
+<div class="pv-section">
+  <p class="pv-label">条目详情（模态浮层：点条目卡弹出，Esc / 点遮罩关闭；附件图片为占位示意）</p>
+  <main style="margin-top:12px">
+    <div class="items">
+      <div class="item clickable" id="pv-detail-card">
+        <div class="title">高铁票 广州南-长沙南</div>
+        <div class="meta">付款人：欧阳嘉宏 · 平台单号 4202692888202609281234</div>
+        <span class="amount">¥553.00</span><span class="meta">（发票 ¥553.00）</span>
+        <div style="margin-top:6px"><span class="badge approved">已通过</span></div>
+        <div class="links">
+          <a href="#">支付记录</a>
+          <a href="#">票据</a>
+          <a href="#">编辑</a>
+        </div>
+      </div>
+    </div>
+    <dialog class="item-detail" id="pv-item-detail">
+      <div class="detail-head">
+        <span class="title">高铁票 广州南-长沙南</span>
+        <span class="meta">交通 · 付款人：欧阳嘉宏</span>
+        <span class="amount">¥553.00</span>
+        <span class="meta">（发票 ¥553.00）</span>
+        <span class="badge approved">已通过</span>
+        <span class="meta">2026-09-28 提交</span>
+        <span class="spacer"></span>
+        <a href="#">编辑</a>
+      </div>
+      <h3>发票</h3>
+      <div class="attach-grid">
+        <div class="attach-card">
+          <div class="attach-preview"><span class="meta">发票图片占位</span></div>
+          <div class="attach-name">铁路电子客票.jpg · ¥553.00</div>
+        </div>
+      </div>
+      <h3>支付记录</h3>
+      <div class="attach-grid">
+        <div class="attach-card">
+          <div class="attach-preview"><span class="meta">PDF 占位（打开浮层时才加载）</span></div>
+          <div class="attach-name">支付宝交易明细.pdf · ¥553.00</div>
+        </div>
+      </div>
+    </dialog>
+  </main>
+</div>
+
 
 <div class="pv-section">
   <p class="pv-label">提交表单（字段帮助文本 + AI 汇总条 + 多附件卡片 + 页内对照）</p>
@@ -273,6 +328,19 @@
     </div>
   </main>
 </div>
+
+<script>
+  // 条目详情演示：点卡片弹浮层，点遮罩关闭（与 board.html 行为一致）
+  const pvCard = document.getElementById("pv-detail-card");
+  const pvDialog = document.getElementById("pv-item-detail");
+  if (pvCard && pvDialog) {
+    pvCard.addEventListener("click", e => {
+      if (e.target.closest(".links")) return;
+      pvDialog.showModal();
+    });
+    pvDialog.addEventListener("click", e => { if (e.target === pvDialog) pvDialog.close(); });
+  }
+</script>
 
 </body>
 </html>
