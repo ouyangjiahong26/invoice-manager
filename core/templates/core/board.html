@@ -28,6 +28,12 @@
             {% if item.owner_id == user.id or user.is_staff %}
               <a href="{% url 'item_update' item.pk %}">编辑</a>
             {% endif %}
+            {% if item.owner_id == user.id %}
+              <form method="post" action="{% url 'item_delete' item.pk %}" style="display:inline;margin-left:8px" onsubmit="return confirm('确定删除这条报销条目？删除后无法恢复，仅可在操作留痕中追溯。')">
+                {% csrf_token %}
+                <button type="submit" style="background:none;border:none;padding:0;color:#cf222e;cursor:pointer;font:inherit">删除</button>
+              </form>
+            {% endif %}
           </div>
         </div>
       {% endfor %}
