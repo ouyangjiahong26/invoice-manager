@@ -1,0 +1,36 @@
+name: Bug 报告
+description: 功能异常、报错或行为不符合预期
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        分诊流程与标签映射见 `docs/agents/triage-labels.md`。
+  - type: textarea
+    id: description
+    attributes:
+      label: 描述
+      description: 发生了什么？涉及哪个页面或功能？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 从哪一步开始、做了什么操作、问题何时出现
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望与实际
+      description: 期望发生什么，实际发生了什么（含报错信息）
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      description: 浏览器及版本，或服务器环境
+    validations:
+      required: true
