@@ -178,10 +178,7 @@ def batch_create(request):
     notes = [f"{category.name}：{category.description}" for category in categories if category.description]
     return render(request, "core/batch_form.html", {
         "vision_configured": vision.configured(),
-        "categories": [
-            {"id": category.pk, "name": category.name, "description": category.description}
-            for category in categories
-        ],
+        "categories": _category_payloads(),
         "category_notes": "；".join(notes),
     })
 
@@ -233,12 +230,8 @@ def batch_pair(request):
         groups, pending, unmatched = _llm_merge_groups(by_id, groups, pending, unmatched)
     suggestions = {}
     if vision.configured() and groups:
-        categories = [
-            {"id": category.pk, "name": category.name, "description": category.description}
-            for category in Category.objects.all()
-        ]
         suggestions = vision.field_suggest(
-            [[_suggest_member(by_id[rid]) for rid in group] for group in groups], categories
+            [[_suggest_member(by_id[rid]) for rid in group] for group in groups], _category_payloads()
         )
     return JsonResponse({
         "groups": groups, "pending": pending, "unmatched": unmatched, "suggestions": suggestions,
@@ -269,15 +262,15 @@ def batch_submit(request):
         if category is None:
             return JsonResponse({"error": f"第 {number} 组类别无效"}, status=400)
         try:
-            actual_amount = Decimal(str(group.get("actual_amount") or "").strip())
-        except InvalidOperation:
-            return JsonResponse({"error": f"第 {number} 组实付金额格式不正确"}, status=400)
-        invoice_amount = None
-        if group.get("invoice_amount") not in (None, ""):
-            try:
-                invoice_amount = Decimal(str(group["invoice_amount"]).strip())
-            except InvalidOperation:
-                return JsonResponse({"error": f"第 {number} 组发票金额格式不正确"}, status=400)
+            actual_amount = _plan_decimal(group.get("actual_amount"), "实付金额")
+        except ValueError as exc:
+            return JsonResponse({"error": f"第 {number} 组{exc}"}, status=400)
+        if actual_amount is None:
+            return JsonResponse({"error": f"第 {number} 组缺少实付金额"}, status=400)
+        try:
+            invoice_amount = _plan_decimal(group.get("invoice_amount"), "发票金额")
+        except ValueError as exc:
+            return JsonResponse({"error": f"第 {number} 组{exc}"}, status=400)
         entries = group.get("files")
         if not isinstance(entries, list) or not entries:
             return JsonResponse({"error": f"第 {number} 组缺少文件"}, status=400)
@@ -323,6 +316,29 @@ def batch_submit(request):
                 messages.warning(request, f"{title}：{warning}")
     messages.success(request, f"已批量提交 {len(prepared)} 条，等待管理员审核。")
     return redirect("board")
+
+
+def _plan_decimal(raw, label):
+    """解析分组计划金额并按 DecimalField(max_digits=10, decimal_places=2) 限位；
+    None/空串返回 None（可选金额用），非法抛 ValueError，文案直接拼进 400 响应。"""
+    if raw is None or raw == "":
+        return None
+    try:
+        value = Decimal(str(raw).strip())
+    except InvalidOperation:
+        raise ValueError(f"{label}格式不正确")
+    if (not value.is_finite() or abs(value) >= Decimal("100000000")
+            or value.quantize(Decimal("0.01")) != value):
+        raise ValueError(f"{label}最多两位小数、绝对值需小于一亿")
+    return value
+
+
+def _category_payloads():
+    """模板下拉与 LLM 建议共用的类别摘要。"""
+    return [
+        {"id": category.pk, "name": category.name, "description": category.description}
+        for category in Category.objects.all()
+    ]
 
 
 def _decimal_or_none(raw):

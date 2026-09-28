@@ -20,8 +20,7 @@ from decimal import Decimal
 # 与 validation.AMOUNT_TOLERANCE 同值；独立定义以保持本模块零 Django 依赖
 AMOUNT_TOLERANCE = Decimal("0.005")
 
-KIND_INVOICE, KIND_PAYMENT, KIND_REFUND, KIND_UNKNOWN = "invoice", "payment", "refund", "unknown"
-KINDS = (KIND_INVOICE, KIND_PAYMENT, KIND_REFUND)
+KIND_INVOICE, KIND_PAYMENT, KIND_REFUND = "invoice", "payment", "refund"
 
 REASON_NO_PAYMENT = "找不到对应支付记录"
 REASON_NO_INVOICE = "找不到对应发票"

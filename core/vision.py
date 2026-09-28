@@ -337,7 +337,7 @@ def field_suggest(groups, categories):
             return {}
         valid_ids = {int(category["id"]) for category in categories}
         result = []
-        for entry in suggestions:
+        for entry in suggestions[:len(groups)]:
             if not isinstance(entry, dict):
                 result.append(None)
                 continue
@@ -349,6 +349,7 @@ def field_suggest(groups, categories):
             if category_id not in valid_ids:
                 category_id = None
             result.append({"title": title, "category_id": category_id} if title else None)
+        result.extend([None] * (len(groups) - len(result)))  # 模型少给时补 None，保证与组等长
         return {"suggestions": result}
     except Exception:
         logger.warning("LLM 字段建议解析失败", exc_info=True)

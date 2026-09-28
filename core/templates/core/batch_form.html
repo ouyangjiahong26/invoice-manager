@@ -91,6 +91,7 @@
   if (!uploadInput) return;  // 未配置识别服务时不初始化
   var KIND_LABELS = {invoice: "发票", payment: "支付记录", refund: "退款记录", unknown: "未识别"};
   var AMOUNT_LABELS = {invoice: "发票金额（元）", payment: "支付金额（元）", refund: "退款金额（元）", unknown: "金额（元）"};
+  var AMOUNT_TOLERANCE = 0.005;  // 与 core/validation.py 的 AMOUNT_TOLERANCE 一致
   var FIELD_DEFS = {
     invoice: [
       {role: "invoice_no", label: "发票号码"},
@@ -245,6 +246,8 @@
   // 手动切换类型：调现有单条识别端点按新类型重识别
   function switchKind(card, kind) {
     renderKindFields(card, kind);
+    // 金额框为各类型共享：旧值属于旧口径，清空待重识别回填或手填
+    card.querySelector('[data-role="amount"]').value = "";
     detecting++;
     status(card, "重新识别中…");
     var data = new FormData();
@@ -464,7 +467,7 @@
     if (!hasInvoice || !hasPayment) {
       text += "；缺少" + (hasInvoice ? "支付记录" : "发票") + "，不能提交";
       el.className = "reconcile warn";
-    } else if (Math.abs(sums.invoice - sums.net) > 0.005) {
+    } else if (Math.abs(sums.invoice - sums.net) > AMOUNT_TOLERANCE) {
       text += "；两侧金额不一致，请核对";
       el.className = "reconcile warn";
     } else {
@@ -545,7 +548,7 @@
     });
     var hint = document.createElement("div");
     hint.className = "helptext";
-    hint.textContent = active.length ? "金额或单号存在多候选歧义，请人工确认后并入目标组。" : "没有待确认组。";
+    hint.textContent = active.length ? "金额或单号存在多候选歧义，请人工确认后并入目标组，或整组设为新组。" : "没有待确认组。";
     box.appendChild(hint);
     active.forEach(function (members, i) {
       var el = document.createElement("div");
@@ -573,8 +576,20 @@
         pendingGroups.splice(pendingGroups.indexOf(members), 1);
         renderGroups();
       });
-      row.appendChild(select);
+      if (groups.length) row.appendChild(select);
       row.appendChild(merge);
+      var promote = document.createElement("button");
+      promote.type = "button";
+      promote.className = "small secondary";
+      promote.textContent = "设为新组";
+      promote.addEventListener("click", function () {
+        // 整批都进待确认时 groups 为空，提供成组出口避免死路
+        groups.push({members: members.slice(), suggestion: null, title: "", categoryId: "",
+                      actual: undefined, invoice: undefined});
+        pendingGroups.splice(pendingGroups.indexOf(members), 1);
+        renderGroups();
+      });
+      row.appendChild(promote);
       el.appendChild(row);
       box.appendChild(el);
     });
@@ -595,7 +610,7 @@
     });
     var hint = document.createElement("div");
     hint.className = "helptext";
-    hint.textContent = rows.length ? "以下文件不会生成条目，可手动加入某组或忽略。" : "没有未配对文件。";
+    hint.textContent = rows.length ? "以下文件不会生成条目，可手动加入某组、新建组或忽略。" : "没有未配对文件。";
     box.appendChild(hint);
     rows.forEach(function (entry) {
       var row = document.createElement("div");
@@ -620,6 +635,20 @@
         });
         row.appendChild(select);
         row.appendChild(join);
+      } else {
+        var create = document.createElement("button");
+        create.type = "button";
+        create.className = "small secondary";
+        create.textContent = "新建组";
+        create.addEventListener("click", function () {
+          // 一个组都没有时给出成组出口，避免整批未配对死路
+          groups.push({members: [entry.card], suggestion: null, title: "", categoryId: "",
+                       actual: undefined, invoice: undefined});
+          var stateIndex = unmatched.indexOf(entry);
+          if (stateIndex >= 0) unmatched.splice(stateIndex, 1);
+          renderGroups();
+        });
+        row.appendChild(create);
       }
       var ignore = document.createElement("button");
       ignore.type = "button";
@@ -656,7 +685,7 @@
     if (!groups.length) {
       var empty = document.createElement("div");
       empty.className = "helptext";
-      empty.textContent = "没有配成的组，请从未配对区手动加入组。";
+      empty.textContent = "没有配成的组，可从待确认组设为新组，或从未配对区新建组。";
       groupList.appendChild(empty);
     }
     groups.forEach(function (group, i) {

@@ -632,17 +632,26 @@ class VisionDetectTests(SimpleTestCase):
 
     def test_field_suggest_drops_invalid_category(self):
         content = json.dumps({"suggestions": [
-            {"title": "打印费", "category_id": 1}, {"title": "书", "category_id": 999}, "bad",
+            {"title": "打印费", "category_id": 999}, {"title": "书", "category_id": 1},
         ]})
         with mock.patch("core.vision._post", return_value=self._response(content)):
             result = vision.field_suggest(
                 [[{"id": 0, "kind": "invoice", "amount": "10", "items_summary": "打印"}]],
                 [{"id": 1, "name": "书籍", "description": ""}],
             )
+        self.assertEqual(len(result["suggestions"]), 1)  # 超出组数的建议被截断
+        self.assertEqual(result["suggestions"][0]["title"], "打印费")
+        self.assertIsNone(result["suggestions"][0]["category_id"])  # 类别不在表中丢为 None
+
+    def test_field_suggest_pads_short_response_to_group_count(self):
+        content = json.dumps({"suggestions": [{"title": "打印费", "category_id": 1}]})
+        groups = [[{"id": 0, "kind": "invoice", "amount": "10", "items_summary": "打印"}],
+                  [{"id": 1, "kind": "payment", "amount": "10", "items_summary": ""}]]
+        with mock.patch("core.vision._post", return_value=self._response(content)):
+            result = vision.field_suggest(groups, [{"id": 1, "name": "书籍", "description": ""}])
+        self.assertEqual(len(result["suggestions"]), len(groups))  # 模型少给时补 None 与组等长
         self.assertEqual(result["suggestions"][0], {"title": "打印费", "category_id": 1})
-        self.assertEqual(result["suggestions"][1]["title"], "书")
-        self.assertIsNone(result["suggestions"][1]["category_id"])
-        self.assertIsNone(result["suggestions"][2])
+        self.assertIsNone(result["suggestions"][1])
 
 
 
@@ -705,6 +714,41 @@ class BatchSubmitTests(SubmissionTestCase):
         ], [_png_upload("invoice.png")])
         self.assertEqual(response.status_code, 400)
         self.assertIn("缺少发票或支付记录", response.json()["error"])
+        self.assertFalse(Item.objects.exists())
+
+    def test_full_refund_group_accepts_zero_actual(self):
+        # 全退款组净额 0：actual_amount 为 JSON 数字 0 时不能被当缺失拒掉
+        self.client.force_login(self.student)
+        response = self._post_batch([{
+            "title": "全退款", "category": self.category.pk,
+            "actual_amount": 0, "invoice_amount": "20.00",
+            "files": [
+                {"index": 0, "kind": "invoice", "amount": "20.00"},
+                {"index": 1, "kind": "payment", "amount": "20.00", "order_no": ALIPAY_ORDER_NO},
+                {"index": 2, "kind": "refund", "amount": "20.00", "order_no": ALIPAY_ORDER_NO},
+            ],
+        }], [_png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png")])
+        self.assertRedirects(response, "/")
+        item = Item.objects.latest("id")
+        self.assertEqual(str(item.actual_amount), "0.00")
+
+    def test_amount_beyond_model_limits_rejected(self):
+        self.client.force_login(self.student)
+        base = {
+            "title": "越界", "category": self.category.pk,
+            "files": [
+                {"index": 0, "kind": "invoice", "amount": "10.00"},
+                {"index": 1, "kind": "payment", "amount": "10.00"},
+            ],
+        }
+        for bad in ("100000000", "1.005"):
+            with self.subTest(amount=bad):
+                response = self._post_batch(
+                    [{**base, "actual_amount": bad}],
+                    [_png_upload("invoice.png"), _png_upload("payment.png")],
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("最多两位小数", response.json()["error"])
         self.assertFalse(Item.objects.exists())
 
     def test_requires_login(self):
