@@ -1,0 +1,158 @@
+{% if is_create %}
+<div class="panel-head">
+  <b>提交报销条目</b>
+  <span class="spacer"></span>
+  <button type="button" class="secondary small panel-close">关闭</button>
+</div>
+{% else %}
+<div class="panel-head">
+  <b>{{ item.title }}</b>
+  <span class="meta">{{ item.category.name }} · {{ item.payer_name }}{% if item.batch %} · {{ item.batch.name }}{% endif %}</span>
+  <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
+  <span class="meta">{{ item.created_at|date:"Y-m-d" }} 提交</span>
+  <span class="spacer"></span>
+  <button type="button" class="secondary small panel-close">关闭</button>
+</div>
+{% endif %}
+
+{% if warnings %}
+<div class="panel-warnings">
+  {% for warning in warnings %}<div>{{ warning }}</div>{% endfor %}
+</div>
+{% endif %}
+
+{% if form %}
+<div class="ai-summary" id="panel-ai-summary">尚未上传附件</div>
+<form class="stack" id="panel-form" method="post" enctype="multipart/form-data" action="{% if is_create %}{% url 'item_create' %}{% else %}{% url 'item_update' item.pk %}{% endif %}">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for field in form %}
+    <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
+    {{ field.errors }}
+    {{ field }}
+    {% if field.help_text %}<div class="helptext">{{ field.help_text }}</div>{% endif %}
+  {% endfor %}
+
+  <div class="attach-block">
+    <h3>发票（可多张）</h3>
+    <input type="file" id="panel-upload-invoice" name="invoices" data-kind="invoice" multiple
+           accept=".jpg,.jpeg,.png,.pdf">
+    <div class="attach-grid" id="panel-cards-invoice"></div>
+  </div>
+
+  <div class="attach-block">
+    <h3>支付记录（可多笔）</h3>
+    <input type="file" id="panel-upload-payment" name="payments" data-kind="payment" multiple
+           accept=".jpg,.jpeg,.png,.pdf">
+    <div class="attach-grid" id="panel-cards-payment"></div>
+  </div>
+
+  <details class="attach-block">
+    <summary>有退款？点击展开</summary>
+    <input type="file" id="panel-upload-refund" name="refunds" data-kind="refund" multiple
+           accept=".jpg,.jpeg,.png,.pdf">
+    <div class="attach-grid" id="panel-cards-refund"></div>
+  </details>
+
+  <div class="reconcile" id="panel-reconcile"></div>
+
+  <div>
+    <button type="submit">{% if is_create %}提交{% else %}保存{% endif %}</button>
+    <span class="submit-hint" id="panel-submit-hint" hidden></span>
+    <div class="errorlist" id="panel-error" hidden></div>
+  </div>
+</form>
+{% else %}
+<div class="panel-readonly">
+  <table class="panel-fields">
+    <tr><th>明细</th><td>{{ item.title }}</td></tr>
+    <tr><th>类别</th><td>{{ item.category.name }}</td></tr>
+    <tr><th>实付款</th><td>¥{{ item.actual_amount }}</td></tr>
+    <tr><th>发票金额</th><td>{% if item.invoice_amount %}¥{{ item.invoice_amount }}{% else %}—{% endif %}</td></tr>
+    <tr><th>付款人</th><td>{{ item.payer_name }}</td></tr>
+    <tr><th>状态</th><td><span class="badge {{ item.status }}">{{ item.get_status_display }}</span></td></tr>
+    <tr><th>提交时间</th><td>{{ item.created_at|date:"Y-m-d H:i" }}</td></tr>
+  </table>
+</div>
+{% endif %}
+
+{% if not is_create %}
+<div class="panel-section">
+  <h3>已保存附件</h3>
+  {% if item.attachments.all %}
+    {% for kind, rows in attachment_groups.items %}
+      {% if rows %}
+        <h4>{{ rows.0.get_kind_display }}</h4>
+        <div class="attach-grid">
+          {% for row in rows %}
+            <div class="attach-card" data-kind="{{ kind }}" data-remark="{{ row.ocr_data.remark_order_no|default:'' }}">
+              <div class="attach-preview">
+                {% if row.is_pdf %}
+                  <iframe data-src="{% url 'file_serve' row.pk %}" title="{{ row.display_name }}"></iframe>
+                {% else %}
+                  <img src="{% url 'file_serve' row.pk %}" alt="{{ row.display_name }}" loading="lazy">
+                {% endif %}
+              </div>
+              <div class="attach-body">
+                <div class="attach-name">{{ row.display_name }}{% if row.amount %} · ¥{{ row.amount }}{% endif %}</div>
+                {% if can_edit %}
+                <form class="attach-row-form" method="post" action="{% url 'attachment_update' row.pk %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="kind" value="{{ row.kind }}">
+                  <label>金额
+                    <input type="number" step="0.01" name="amount" data-role="amount"
+                           value="{{ row.amount|default_if_none:'' }}">
+                  </label>
+                  {% if kind == 'invoice' %}
+                    <label>发票号码
+                      <input type="text" name="invoice_no" data-role="invoice_no" value="{{ row.invoice_no }}">
+                    </label>
+                  {% else %}
+                    <label>平台单号
+                      <input type="text" name="order_no" data-role="order_no" value="{{ row.order_no }}">
+                    </label>
+                    <label>商户单号
+                      <input type="text" name="merchant_no" data-role="merchant_no" value="{{ row.merchant_no }}">
+                    </label>
+                  {% endif %}
+                  <button type="submit" class="secondary small">保存本附件</button>
+                </form>
+                <form class="attach-delete-form" method="post" action="{% url 'attachment_delete' row.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="danger small">删除</button>
+                </form>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <div class="helptext">暂无附件。</div>
+  {% endif %}
+</div>
+
+{% if audit_logs %}
+<div class="panel-section">
+  <h3>操作记录</h3>
+  <table class="panel-audit">
+    <thead>
+      <tr><th>时间</th><th>操作人</th><th>动作</th><th>明细</th></tr>
+    </thead>
+    <tbody>
+      {% for log in audit_logs %}
+      <tr>
+        <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
+        <td>{{ log.actor_name|default:"系统" }}</td>
+        <td>{{ log.get_action_display }}</td>
+        <td>
+          {% for label, text in log.detail_rows %}<div>{{ label }}：{{ text }}</div>{% empty %}—{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endif %}

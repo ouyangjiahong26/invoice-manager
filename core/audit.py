@@ -13,11 +13,11 @@ from django.db.models.signals import post_delete, post_save, pre_save
 from .models import Attachment, AuditLog, Item
 
 SNAPSHOT_FIELDS = [
-    "title", "category", "actual_amount", "invoice_amount", "attachments", "status",
+    "title", "category", "actual_amount", "invoice_amount", "attachments", "status", "owner",
 ]
 FIELD_LABELS = {
     "title": "明细", "category": "类别", "actual_amount": "实付款",
-    "invoice_amount": "发票金额", "attachments": "附件", "status": "状态",
+    "invoice_amount": "发票金额", "attachments": "附件", "status": "状态", "owner": "付款人",
 }
 ATTACHMENT_LABELS = {
     "kind": "类型", "amount": "金额", "order_no": "平台单号",
@@ -123,6 +123,8 @@ def _snapshot(item):
         value = getattr(item, field)
         if field == "category":
             value = value.name
+        if field == "owner":
+            value = value.get_full_name() or value.username
         data[field] = "" if value is None else str(value)
     return data
 
@@ -142,7 +144,7 @@ def _log(item_pk, action, snapshot, item=None):
 def _pre_save_item(sender, instance, **kwargs):
     old = None
     if instance.pk is not None:
-        old = Item.objects.select_related("category").filter(pk=instance.pk).first()
+        old = Item.objects.select_related("category", "owner").filter(pk=instance.pk).first()
     if old is None:
         instance._audit_old = None
         return

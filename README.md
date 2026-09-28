@@ -1,4 +1,4 @@
-# 报销看板（invoice-manager）
+# 报销管理（invoice-manager）
 
 ![CI](https://github.com/ouyangjiahong26/invoice-manager/actions/workflows/ci.yml/badge.svg)
 ![release](https://img.shields.io/github/v/release/ouyangjiahong26/invoice-manager)
@@ -6,13 +6,13 @@
 ![python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![django](https://img.shields.io/badge/Django-6.1-green.svg)
 
-学生登录后自助提交报销条目（发票/支付记录/退款记录附件，AI 识别回填金额与单号，页内预览核对 + 实付金额），按类别看板展示；管理员在后台审核，一键导出报销 Excel 与票据 zip。账号仅由管理员开通，开放注册已关闭。
+学生登录后自助提交报销条目（发票/支付记录/退款记录附件，AI 识别回填金额与单号，页内预览核对 + 实付金额），在共享表格视图中查看与筛选（批次切换、行内编辑，staff 可拖拽调序、行内审核），点行打开侧边栏编辑详情；管理员按报销批次一键导出报销 Excel 与票据 zip。账号仅由管理员开通，开放注册已关闭。
 
 ## 界面预览
 
-![看板](docs/images/preview-board.png)
+![表格视图](docs/images/preview-board.png)
 
-![提交表单](docs/images/preview-form.png)
+![条目侧边栏](docs/images/preview-form.png)
 
 ## 快速开始
 

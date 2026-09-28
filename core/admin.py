@@ -2,13 +2,13 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
 
-from .models import AuditLog, Category, Item
+from .models import AuditLog, Batch, Category, Item
 
 
 @admin.register(Item)
 class ItemAdmin(admin.ModelAdmin):
-    list_display = ("title", "payer_name", "category", "actual_amount", "invoice_amount", "status", "created_at")
-    list_filter = ("status", "category")
+    list_display = ("title", "payer_name", "category", "batch", "actual_amount", "invoice_amount", "status", "created_at")
+    list_filter = ("status", "category", "batch")
     search_fields = (
         "title", "owner__username", "owner__first_name",
         "attachments__order_no", "attachments__merchant_no", "attachments__invoice_no",
@@ -114,3 +114,13 @@ class CategoryAdmin(admin.ModelAdmin):
     list_display = ("name", "description", "order")
     list_editable = ("order",)
     search_fields = ("name", "description")
+
+
+@admin.register(Batch)
+class BatchAdmin(admin.ModelAdmin):
+    list_display = ("name", "created_at", "item_count")
+    search_fields = ("name",)
+
+    @admin.display(description="条目数")
+    def item_count(self, obj):
+        return obj.items.count()
