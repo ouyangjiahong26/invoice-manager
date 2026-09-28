@@ -126,7 +126,7 @@
 </div>
 
 <div class="pv-section">
-  <p class="pv-label">提交表单（必填标记 + 帮助文本）</p>
+  <p class="pv-label">提交表单（必填标记 + 帮助文本 + 自动预填提示样例）</p>
   <main style="margin-top:12px">
     <div class="card" style="max-width:520px">
       <h1>提交报销条目</h1>
@@ -141,6 +141,7 @@
         <input id="pv-amount" value="553.00">
         <label for="pv-invoice">发票文件 *</label>
         <input id="pv-invoice" type="file">
+        <div class="helptext">已自动识别发票金额与号码（某某科技有限公司），请核对。</div>
         <label for="pv-pay">支付截图 *</label>
         <input id="pv-pay" type="file">
         <div class="helptext">支持 jpg / png / pdf；图片将做深色检测，避免误传收款码。</div>
