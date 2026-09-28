@@ -9,7 +9,7 @@ class SignUpForm(UserCreationForm):
     first_name = forms.CharField(
         label="真实姓名",
         max_length=30,
-        help_text="将作为报销表中的「付款人」显示，请填写真实姓名",
+        help_text="将作为报销表中的"付款人"显示，请填写真实姓名",
     )
 
     class Meta(UserCreationForm.Meta):

@@ -11,7 +11,7 @@
 - nginx 只直供 `/static/`（collectstatic 产物），不配置 `/media/`。
 - 看板上的文件访问走 `core.views.file_serve`（`/items/<pk>/file/<kind>/`）：`login_required` + `FileResponse` 流式返回，kind ∈ invoice|payment。
 - 生产环境额外挂 `re_path(r"^media/(?P<path>.*)$")` 的登录保护 serve（admin 里文件链接可用且仍需登录）。
-- 导出 Excel 中「支付截图/票据」单元格的超链接指向 `file_serve` 路由。
+- 导出 Excel 中"支付截图/票据"单元格的超链接指向 `file_serve` 路由。
 
 ## 后果
 

@@ -52,6 +52,10 @@ uv run python manage.py test
 ## Testing & QA
 `python manage.py test`（Django TestCase）。涉及文件导出/上传的测试需构造临时 `MEDIA_ROOT`；OCR 依赖全部 mock（`core.ocr.prefill` 层面）。
 
+## 写作约定
+
+- 任何输出（代码注释、文档、commit 信息、聊天回复）不使用「」符号；需要引用时用双引号 ""。
+
 ## Agent skills
 
 - **Issue tracker**：GitHub Issues（`gh` CLI），配置见 `docs/agents/issue-tracker.md`；GitHub Project #7 同步工作状态（`/github-project`、`/triage`、`/open-pr`、`/merge-pr` 读取）。

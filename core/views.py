@@ -193,7 +193,7 @@ def export_zip(request):
         seq = 0
         for category, items in _approved_by_category():
             for item in items:
-                seq += 1  # 与 Excel「序号」列一致（全局连续）
+                seq += 1  # 与 Excel"序号"列一致（全局连续）
                 for kind, field in (("invoice", item.invoice_file), ("payment", item.payment_screenshot)):
                     if not field:
                         continue
