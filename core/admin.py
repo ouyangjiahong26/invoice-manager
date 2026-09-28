@@ -1,5 +1,6 @@
 from django.contrib import admin
-from django.utils.html import format_html
+from django.urls import reverse
+from django.utils.html import format_html, format_html_join
 
 from .models import AuditLog, Category, Item
 
@@ -8,9 +9,29 @@ from .models import AuditLog, Category, Item
 class ItemAdmin(admin.ModelAdmin):
     list_display = ("title", "payer_name", "category", "actual_amount", "invoice_amount", "status", "created_at")
     list_filter = ("status", "category")
-    search_fields = ("title", "owner__username", "owner__first_name", "order_no", "invoice_no")
+    search_fields = (
+        "title", "owner__username", "owner__first_name",
+        "attachments__order_no", "attachments__merchant_no", "attachments__invoice_no",
+    )
     list_editable = ("status",)
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = ("created_at", "updated_at", "attachments_display")
+
+    @admin.display(description="附件")
+    def attachments_display(self, obj):
+        rows = format_html_join(
+            "<br>",
+            '<a href="{}">{} {} {}</a>',
+            (
+                (
+                    reverse("file_serve", args=[a.pk]),
+                    a.get_kind_display(),
+                    a.amount if a.amount is not None else "",
+                    a.order_no or a.merchant_no or a.invoice_no or "",
+                )
+                for a in obj.attachments.all()
+            ),
+        )
+        return rows or "无"
 
     class AuditLogInline(admin.TabularInline):
         model = AuditLog
@@ -57,7 +78,7 @@ class ItemAdmin(admin.ModelAdmin):
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ("created_at", "actor_name", "action", "item_repr", "summary")
     list_filter = ("action",)
-    search_fields = ("actor_name", "item__title", "item__order_no")
+    search_fields = ("actor_name", "item__title")
 
     @admin.display(description="动作")
     def action(self, obj):
@@ -87,5 +108,6 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ("name", "order")
+    list_display = ("name", "description", "order")
     list_editable = ("order",)
+    search_fields = ("name", "description")
