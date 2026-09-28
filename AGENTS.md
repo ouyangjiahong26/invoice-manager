@@ -60,6 +60,12 @@ uv run python manage.py test
 - **分诊**：标签映射见 `docs/agents/triage-labels.md`（`/triage` 读取）。
 - **领域文档**：约定见 `docs/agents/domain.md`（`/domain-modeling`、`/grill-with-docs` 读取）；根目录 `CONTEXT.md` 为术语表，`docs/adr/` 为决策记录——输出领域概念时按术语表用词，与 ADR 冲突时显式标注。
 
+## gh CLI 已知问题
+
+- `gh project item-list --format json` 的 `fieldValues` 可能为 `null`（本仓库 Project #7 全部 item 即如此）：字段全空时无法区分"无值"与"返回缺失"，需对照 GitHub 网页或其他途径确认。
+- 顶层 GraphQL root 没有 `projectV2` 字段，需走 `organization(login:...){projectV2(...)}`。
+- GraphQL 查询中对 `fieldValues` 或内联片段使用别名会报 `Expected NAME, actual: (none)` 解析错误；省略别名即可。
+
 ## 交流语言
 
 始终使用中文与用户交流。代码、commit message、PR 描述等技术输出也用中文。
