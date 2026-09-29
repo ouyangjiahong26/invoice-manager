@@ -694,36 +694,72 @@ class VisionDetectTests(SimpleTestCase):
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class BatchStageTests(SubmissionTestCase):
+    def test_stage_returns_session_and_persists_files(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/stage/",
+            {"files": [_png_upload("发票 1.png"), _png_upload("payment.pdf")]},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertRegex(data["session_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual([f["name"] for f in data["files"]], ["发票_1.png", "payment.pdf"])
+        from django.conf import settings
+        session_dir = Path(settings.MEDIA_ROOT) / "tmp" / "batch" / data["session_id"]
+        self.assertEqual(len(list(session_dir.iterdir())), 3)  # meta.json + 2 文件
+
+    def test_stage_rejects_bad_extension_and_login(self):
+        self.client.force_login(self.student)
+        response = self.client.post("/items/batch/stage/", {"files": [_png_upload("a.gif")]})
+        self.assertEqual(response.status_code, 400)
+        self.client.logout()
+        self.assertEqual(self.client.post("/items/batch/stage/", {}).status_code, 302)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchSubmitTests(SubmissionTestCase):
-    def _post_batch(self, groups, files):
+    def _stage(self, uploads):
+        """走 stage 端点建会话，返回 (session_id, [file_id])。"""
+        self.client.force_login(self.student)
+        response = self.client.post("/items/batch/stage/", {"files": uploads})
+        data = response.json()
+        return data["session_id"], [f["id"] for f in data["files"]]
+
+    def _post_batch(self, session_id, groups):
         return self.client.post(
-            "/items/batch/submit/", {"plan": json.dumps({"groups": groups}), "files": files}
+            "/items/batch/submit/",
+            json.dumps({"session_id": session_id, "groups": groups}),
+            content_type="application/json",
         )
 
     def test_submit_creates_pending_items_with_attachments(self):
+        session_id, file_ids = self._stage([
+            _png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png"),
+            _png_upload("invoice2.png"), _png_upload("payment2.png"),
+        ])
         self.client.force_login(self.student)
-        response = self._post_batch([
+        response = self._post_batch(session_id, [
             {
                 "title": "硬盘", "category": self.category.pk,
                 "actual_amount": "80.00", "invoice_amount": "100.00",
                 "files": [
-                    {"index": 0, "kind": "invoice", "amount": "100.00", "invoice_no": "INV1",
-                     "ocr": {"buyer_name": "清华大学"}},
-                    {"index": 1, "kind": "payment", "amount": "100.00", "order_no": ALIPAY_ORDER_NO},
-                    {"index": 2, "kind": "refund", "amount": "20.00", "merchant_no": "R1"},
+                    {"file_id": file_ids[0], "kind": "invoice", "amount": "100.00",
+                     "invoice_no": "INV1", "ocr": {"buyer_name": "清华大学"}},
+                    {"file_id": file_ids[1], "kind": "payment", "amount": "100.00",
+                     "order_no": ALIPAY_ORDER_NO},
+                    {"file_id": file_ids[2], "kind": "refund", "amount": "20.00",
+                     "merchant_no": "R1"},
                 ],
             },
             {
                 "title": "打印费", "category": self.category.pk,
                 "actual_amount": "5.00", "invoice_amount": "5.00",
                 "files": [
-                    {"index": 3, "kind": "invoice", "amount": "5.00"},
-                    {"index": 4, "kind": "payment", "amount": "5.00"},
+                    {"file_id": file_ids[3], "kind": "invoice", "amount": "5.00"},
+                    {"file_id": file_ids[4], "kind": "payment", "amount": "5.00"},
                 ],
             },
-        ], [
-            _png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png"),
-            _png_upload("invoice2.png"), _png_upload("payment2.png"),
         ])
         self.assertRedirects(response, "/")
         self.assertEqual(Item.objects.count(), 2)
@@ -741,71 +777,123 @@ class BatchSubmitTests(SubmissionTestCase):
         log = AuditLog.objects.get(action="create", item_pk=item.pk)
         self.assertEqual(len(log.snapshot["attachments"]), 3)
 
-    def test_single_sided_group_rejected_without_items(self):
+    def test_session_cleared_after_submit(self):
+        session_id, file_ids = self._stage(
+            [_png_upload("invoice.png"), _png_upload("payment.png")])
         self.client.force_login(self.student)
-        response = self._post_batch([
-            {
-                "title": "只有发票", "category": self.category.pk,
-                "actual_amount": "10.00",
-                "files": [{"index": 0, "kind": "invoice", "amount": "10.00"}],
-            },
-        ], [_png_upload("invoice.png")])
+        response = self._post_batch(session_id, [{
+            "title": "打印费", "category": self.category.pk,
+            "actual_amount": "5.00", "invoice_amount": "5.00",
+            "files": [
+                {"file_id": file_ids[0], "kind": "invoice", "amount": "5.00"},
+                {"file_id": file_ids[1], "kind": "payment", "amount": "5.00"},
+            ],
+        }])
+        self.assertRedirects(response, "/")
+        from django.conf import settings
+        self.assertFalse(
+            (Path(settings.MEDIA_ROOT) / "tmp" / "batch" / session_id).exists())
+
+    def test_solo_invoice_group_submits_with_zero_actual(self):
+        session_id, file_ids = self._stage([_png_upload("invoice.png")])
+        self.client.force_login(self.student)
+        response = self._post_batch(session_id, [{
+            "title": "只有发票", "category": self.category.pk,
+            "actual_amount": "0.00", "invoice_amount": "10.00",
+            "files": [{"file_id": file_ids[0], "kind": "invoice", "amount": "10.00"}],
+        }])
+        self.assertRedirects(response, "/")
+        item = Item.objects.latest("id")
+        self.assertEqual(str(item.actual_amount), "0.00")
+        self.assertEqual(item.attachments.count(), 1)
+
+    def test_payment_only_group_rejected_without_items(self):
+        session_id, file_ids = self._stage([_png_upload("payment.png")])
+        self.client.force_login(self.student)
+        response = self._post_batch(session_id, [{
+            "title": "只有支付", "category": self.category.pk,
+            "actual_amount": "10.00",
+            "files": [{"file_id": file_ids[0], "kind": "payment", "amount": "10.00"}],
+        }])
         self.assertEqual(response.status_code, 400)
-        self.assertIn("缺少发票或支付记录", response.json()["error"])
+        self.assertIn("缺少发票", response.json()["error"])
         self.assertFalse(Item.objects.exists())
+
+    def test_submit_rejects_foreign_session(self):
+        session_id, _ = self._stage([_png_upload("invoice.png")])
+        other = User.objects.create_user(username="other24", password="x")
+        self.client.force_login(other)
+        response = self._post_batch(session_id, [{
+            "title": "盗用", "category": self.category.pk, "actual_amount": "1.00",
+            "files": [{"file_id": "0" * 32, "kind": "invoice", "amount": "1.00"}],
+        }])
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("不属于当前用户", response.json()["error"])
 
     def test_full_refund_group_accepts_zero_actual(self):
         # 全退款组净额 0：actual_amount 为 JSON 数字 0 时不能被当缺失拒掉
+        session_id, file_ids = self._stage([
+            _png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png")])
         self.client.force_login(self.student)
-        response = self._post_batch([{
+        response = self._post_batch(session_id, [{
             "title": "全退款", "category": self.category.pk,
             "actual_amount": 0, "invoice_amount": "20.00",
             "files": [
-                {"index": 0, "kind": "invoice", "amount": "20.00"},
-                {"index": 1, "kind": "payment", "amount": "20.00", "order_no": ALIPAY_ORDER_NO},
-                {"index": 2, "kind": "refund", "amount": "20.00", "order_no": ALIPAY_ORDER_NO},
+                {"file_id": file_ids[0], "kind": "invoice", "amount": "20.00"},
+                {"file_id": file_ids[1], "kind": "payment", "amount": "20.00",
+                 "order_no": ALIPAY_ORDER_NO},
+                {"file_id": file_ids[2], "kind": "refund", "amount": "20.00",
+                 "order_no": ALIPAY_ORDER_NO},
             ],
-        }], [_png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("refund.png")])
+        }])
         self.assertRedirects(response, "/")
         item = Item.objects.latest("id")
         self.assertEqual(str(item.actual_amount), "0.00")
 
     def test_amount_beyond_model_limits_rejected(self):
+        session_id, file_ids = self._stage(
+            [_png_upload("invoice.png"), _png_upload("payment.png")])
         self.client.force_login(self.student)
         base = {
             "title": "越界", "category": self.category.pk,
             "files": [
-                {"index": 0, "kind": "invoice", "amount": "10.00"},
-                {"index": 1, "kind": "payment", "amount": "10.00"},
+                {"file_id": file_ids[0], "kind": "invoice", "amount": "10.00"},
+                {"file_id": file_ids[1], "kind": "payment", "amount": "10.00"},
             ],
         }
         for bad in ("100000000", "1.005"):
             with self.subTest(amount=bad):
                 response = self._post_batch(
-                    [{**base, "actual_amount": bad}],
-                    [_png_upload("invoice.png"), _png_upload("payment.png")],
-                )
+                    session_id, [{**base, "actual_amount": bad}])
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("最多两位小数", response.json()["error"])
         self.assertFalse(Item.objects.exists())
 
     def test_requires_login(self):
-        response = self.client.post("/items/batch/submit/", {})
+        response = self.client.post("/items/batch/submit/", "{}", content_type="application/json")
         self.assertEqual(response.status_code, 302)
 
 
-
-@override_settings(DEEPSEEK_API_KEY="test-key")
+@override_settings(DEEPSEEK_API_KEY="test-key", MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchPairViewTests(SubmissionTestCase):
-    def _post_pair(self, records):
+    def _stage(self, uploads):
+        self.client.force_login(self.student)
+        response = self.client.post("/items/batch/stage/", {"files": uploads})
+        data = response.json()
+        return data["session_id"], [f["id"] for f in data["files"]]
+
+    def _post_pair(self, session_id, records):
         return self.client.post(
-            "/items/batch/pair/", json.dumps({"records": records}), content_type="application/json"
+            "/items/batch/pair/",
+            json.dumps({"session_id": session_id, "records": records}),
+            content_type="application/json",
         )
 
     def test_rule_groups_returned_when_unconfigured(self):
+        session_id, _ = self._stage([_png_upload("a.png"), _png_upload("b.png")])
         self.client.force_login(self.student)
         with override_settings(DEEPSEEK_API_KEY=""):
-            response = self._post_pair([
+            response = self._post_pair(session_id, [
                 {"id": 0, "kind": "invoice", "amount": "100", "remark_order_no": "X1"},
                 {"id": 1, "kind": "payment", "amount": "100", "order_no": "X1"},
             ])
@@ -816,14 +904,29 @@ class BatchPairViewTests(SubmissionTestCase):
         self.assertEqual(data["unmatched"], [])
         self.assertEqual(data["suggestions"], {})
 
+    def test_unmatched_invoices_extracted_to_solo_groups(self):
+        session_id, _ = self._stage([_png_upload("a.png"), _png_upload("b.png")])
+        self.client.force_login(self.student)
+        with override_settings(DEEPSEEK_API_KEY="", MEDIA_ROOT=TEMP_MEDIA_ROOT):
+            response = self._post_pair(session_id, [
+                {"id": 0, "kind": "invoice", "amount": "100", "invoice_no": "INV1"},
+                {"id": 1, "kind": "invoice", "amount": "100", "invoice_no": "INV1"},
+                {"id": 2, "kind": "payment", "amount": "999", "order_no": "Z9"},
+            ])
+        data = response.json()
+        self.assertEqual(data["groups"], [])
+        self.assertEqual(sorted(data["solo"]), [[0, 1]])  # 同发票号码重复拍摄并为一组
+        self.assertEqual([entry["id"] for entry in data["unmatched"]], [2])
+
     def test_llm_groups_merged_with_suggestions(self):
+        session_id, _ = self._stage([_png_upload("a.png"), _png_upload("b.png")])
         self.client.force_login(self.student)
         with mock.patch("core.vision.group_suggest", return_value=[[0, 1]]) as group_mock:
             with mock.patch(
                 "core.vision.field_suggest",
                 return_value={"suggestions": [{"title": "打印费", "category_id": self.category.pk}]},
             ) as field_mock:
-                response = self._post_pair([
+                response = self._post_pair(session_id, [
                     {"id": 0, "kind": "invoice", "amount": "30"},
                     {"id": 1, "kind": "payment", "amount": "35", "order_no": "Z9"},
                 ])
@@ -837,6 +940,70 @@ class BatchPairViewTests(SubmissionTestCase):
 
     def test_requires_login(self):
         response = self.client.post("/items/batch/pair/", "{}", content_type="application/json")
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(DEEPSEEK_API_KEY="test-key", MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class BatchAgentRoundTests(SubmissionTestCase):
+    def _stage_two(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/stage/",
+            {"files": [_png_upload("发票.png"), _png_upload("支付.png")]},
+        )
+        data = response.json()
+        return data["session_id"], data["files"][0]["id"], data["files"][1]["id"]
+
+    def test_reread_corrections_merge_and_regroup(self):
+        session_id, invoice_id, payment_id = self._stage_two()
+        corrected = {"kind": "invoice", "amount": 100.0, "remark_order_no": "X1",
+                     "handwritten_notes": "30 划掉改 100"}
+        unchanged = {"kind": "payment", "amount": 100.0, "order_no": "X1"}
+        with mock.patch("core.vision.group_suggest", return_value=[]), \
+             mock.patch("core.vision.reread", side_effect=[corrected, unchanged]) as reread_mock:
+            response = self.client.post(
+                "/items/batch/agent-round/",
+                json.dumps({"session_id": session_id, "records": [
+                    {"id": 0, "file_id": invoice_id, "kind": "invoice", "amount": "30",
+                     "filename": "发票.png"},
+                    {"id": 1, "file_id": payment_id, "kind": "payment", "amount": "100",
+                     "order_no": "X1", "filename": "支付.png"},
+                ]}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["groups"], [[0, 1]])
+        self.assertEqual(data["done"], True)
+        self.assertEqual(data["records"][0]["amount"], "100.0")
+        self.assertEqual(data["records"][0]["remark_order_no"], "X1")
+        self.assertTrue(data["actions"])
+        self.assertEqual(reread_mock.call_count, 2)  # 初始两条都未决，各重读一次
+        self.assertEqual(reread_mock.call_args_list[0][0][1], "发票.png")
+
+    def test_no_improvement_ends_with_done(self):
+        session_id, invoice_id, payment_id = self._stage_two()
+        with mock.patch("core.vision.group_suggest", return_value=[]), \
+             mock.patch("core.vision.reread", return_value={}):
+            response = self.client.post(
+                "/items/batch/agent-round/",
+                json.dumps({"session_id": session_id, "records": [
+                    {"id": 0, "file_id": invoice_id, "kind": "invoice", "amount": "30",
+                     "filename": "发票.png"},
+                    {"id": 1, "file_id": payment_id, "kind": "payment", "amount": "999",
+                     "order_no": "Z9", "filename": "支付.png"},
+                ]}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["groups"], [])
+        self.assertEqual(data["done"], True)  # 本轮无改善，提前止损
+        self.assertIn("重读失败", data["actions"][0]["text"])
+
+    def test_requires_login(self):
+        response = self.client.post(
+            "/items/batch/agent-round/", "{}", content_type="application/json")
         self.assertEqual(response.status_code, 302)
 
 

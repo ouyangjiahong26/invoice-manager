@@ -63,11 +63,12 @@ DETECT_PROMPT = (
     '"buyer_name": "购买方名称", "buyer_id": "购买方纳税人识别号", '
     '"items_summary": "发票经营业务范围或商品服务内容摘要", "amount": 数字, '
     '"platform": "alipay|wechat|other|unknown", "order_no": "平台单号", '
-    '"merchant_no": "商户单号"}。'
+    '"merchant_no": "商户单号", "handwritten_notes": "图面上的手写文字"}。'
     "kind 为票据类型：invoice 发票 / payment 支付凭证 / refund 退款凭证，看不出类型用 unknown；"
     "invoice_amount 为价税合计，amount 为支付或退款金额（元，数字）；"
     "order_no 指平台交易单号：支付宝订单号（20 开头，共 28 位）或微信交易单号（4 开头，共 28 位）；"
     "merchant_no 指商家订单号/商户单号（长度不定、可含字母）。"
+    "handwritten_notes 抄录图面上所有手写内容（如手写编号、手写金额、勾画批注），没有手写用空字符串。"
     "与票据类型无关的字段以及无法识别的字段：金额用 null，platform 用 \"unknown\"，其余用空字符串。"
 )
 
@@ -108,6 +109,26 @@ def detect(data, filename):
         return _prefill_image(data, "detect", DETECT_PROMPT)
     except Exception:
         logger.exception("识别失败：%s", filename)
+        return {}
+
+
+def reread(data, filename, hints):
+    """配对智能体定向重读（ADR-0008）：标准 detect 模式加针对性线索，返回同形状字段 dict。
+
+    hints 为给模型的补充线索文本（候选记录摘要、要重点核对的区域等）；失败返回 {}。
+    """
+    if not configured():
+        return {}
+    prompt = (
+        "重新仔细识别这张报销票据文件。此前自动识别可能看错了手写标注、备注区文字或金额数字，"
+        "请逐字核对后输出修正结果。\n\n" + DETECT_PROMPT + "\n\n补充线索：\n" + hints
+    )
+    try:
+        if (filename or "").lower().endswith(".pdf"):
+            return _prefill_pdf(data, "detect", prompt)
+        return _prefill_image(data, "detect", prompt)
+    except Exception:
+        logger.exception("重读失败：%s", filename)
         return {}
 
 
@@ -263,6 +284,7 @@ def _parse_content(content, kind):
             "platform": platform if platform in PLATFORMS else "unknown",
             "order_no": _text(data.get("order_no")),
             "merchant_no": _text(data.get("merchant_no")),
+            "handwritten_notes": _text(data.get("handwritten_notes")),
         }
     return {
         "amount": _parse_amount(data.get("amount")),

@@ -1,12 +1,15 @@
 import json
 import zipfile
+from decimal import Decimal
 from io import BytesIO
 from itertools import groupby
+from types import SimpleNamespace
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.files import File
 from django.db import transaction
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -16,12 +19,12 @@ from django.views.decorators.http import require_POST
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from . import pairing, vision
+from . import pairing, staging, vision
 from .attachments import KIND_LABELS, attachment_groups, build_attachment, decimal_or_none, plan_decimal
 from .audit import attachment_entries, attachment_entry, mark_attachments
 from .forms import AttachmentForm, ItemPanelForm
 from .models import Attachment, Batch, Category, Item
-from .suggest import category_payloads, llm_merge_groups, suggest_member
+from .suggest import category_payloads, llm_merge_groups, pair_summary, suggest_member
 from .validation import check_item
 from .vision import prefill as vision_prefill, validate_upload
 
@@ -416,76 +419,243 @@ def batch_create(request):
 
 @require_POST
 @login_required
-def batch_detect(request):
-    """批量页逐张识别：判类型并提取字段，不落库。"""
-    upload = request.FILES.get("file")
-    if upload is None:
-        return JsonResponse({"error": "缺少 file 字段"}, status=400)
-    error = validate_upload(upload)
-    if error:
-        return JsonResponse({"error": error}, status=400)
-    return JsonResponse(vision.detect(upload.read(), upload.name))
+def batch_stage(request):
+    """批量页暂存上传：文件落配对会话目录，返回 session_id 与文件清单（ADR-0008）。"""
+    uploads = [f for f in request.FILES.getlist("files") if f.name]
+    if not uploads:
+        return JsonResponse({"error": "缺少 files"}, status=400)
+    if len(uploads) > staging.MAX_SESSION_FILES:
+        return JsonResponse({"error": f"一次最多上传 {staging.MAX_SESSION_FILES} 个文件"}, status=400)
+    for upload in uploads:
+        error = validate_upload(upload)
+        if error:
+            return JsonResponse({"error": f"{upload.name}：{error}"}, status=400)
+    session_id, files = staging.create_session(request.user.id, uploads)
+    return JsonResponse({"session_id": session_id, "files": files})
+
+
+def _session_and_file(request, payload):
+    """从请求体解析配对会话与文件路径；非法抛 ValueError（文案可直接进 400）。"""
+    session = staging.session_dir(payload.get("session_id"), request.user.id)
+    return session, staging.file_path(session, payload.get("file_id"))
 
 
 @require_POST
 @login_required
-def batch_pair(request):
-    """规则配对 + LLM 兜底：返回分组、待确认组、未配对与字段建议。"""
+def batch_detect(request):
+    """批量页逐张识别（读配对会话暂存）：判类型并提取字段，不落库。"""
     try:
         payload = json.loads(request.body or "{}")
     except ValueError:
         return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
-    raw_records = payload.get("records") if isinstance(payload, dict) else None
-    if not isinstance(raw_records, list):
-        return JsonResponse({"error": "缺少 records 列表"}, status=400)
+    try:
+        _, path = _session_and_file(request, payload)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    return JsonResponse(vision.detect(path.read_bytes(), staging.file_label(path)))
 
+
+def _parse_records(raw_records):
+    """解析前端提交的记录列表为配对输入；结构非法抛 ValueError（文案）。"""
+    if not isinstance(raw_records, list):
+        raise ValueError("缺少 records 列表")
     records = []
     for raw in raw_records:
         if not isinstance(raw, dict):
-            return JsonResponse({"error": "records 元素必须是对象"}, status=400)
+            raise ValueError("records 元素必须是对象")
         records.append({
             "id": raw.get("id"),
+            "file_id": raw.get("file_id") or "",
             "kind": raw.get("kind"),
             "amount": decimal_or_none(raw.get("amount")),
             "order_no": raw.get("order_no") or "",
             "merchant_no": raw.get("merchant_no") or "",
             "invoice_no": raw.get("invoice_no") or "",
             "remark_order_no": raw.get("remark_order_no") or "",
+            "handwritten_notes": raw.get("handwritten_notes") or "",
+            "filename": raw.get("filename") or "",
             "items_summary": raw.get("items_summary") or "",
         })
+    return records
 
+
+def _json_records(records):
+    """records 深拷贝为 JSON 安全结构（Decimal 金额转字符串）。"""
+    return [{
+        **record,
+        "amount": str(record["amount"]) if record.get("amount") is not None else None,
+    } for record in records]
+
+
+def _solo_groups(unmatched, by_id):
+    """未配对发票按发票号码聚成单边发票组（同号重复拍摄同组）；返回 (solo, 剩余 unmatched)。"""
+    solos, rest = {}, []
+    for entry in unmatched:
+        record = by_id.get(entry["id"])
+        if record is not None and record.get("kind") == Attachment.KIND_INVOICE:
+            solos.setdefault(record.get("invoice_no") or f"__{entry['id']}", []).append(entry["id"])
+        else:
+            rest.append(entry)
+    return list(solos.values()), rest
+
+
+def _pair_records(records):
+    """规则配对 + LLM 兜底 + 单边发票组提取。
+
+    返回 (groups, pending, solo, unmatched, by_id)。
+    """
     result = pairing.pair(records)
     groups, pending, unmatched = result["groups"], result["pending"], result["unmatched"]
     by_id = {record["id"]: record for record in records}
     if vision.configured():
         groups, pending, unmatched = llm_merge_groups(by_id, groups, pending, unmatched)
-    suggestions = {}
+    solo, unmatched = _solo_groups(unmatched, by_id)
+    return groups, pending, solo, unmatched, by_id
+
+
+def _field_suggestions(groups, by_id):
+    """成组记录的明细/类别建议；未配置或无组返回空 dict。"""
     if vision.configured() and groups:
-        suggestions = vision.field_suggest(
+        return vision.field_suggest(
             [[suggest_member(by_id[rid]) for rid in group] for group in groups], category_payloads()
         )
+    return {}
+
+
+@require_POST
+@login_required
+def batch_pair(request):
+    """规则配对 + LLM 兜底 + 单边发票组提取：返回分组、待确认、单边发票组、未配对与字段建议。"""
+    try:
+        payload = json.loads(request.body or "{}")
+    except ValueError:
+        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+    try:
+        staging.session_dir(payload.get("session_id"), request.user.id)
+        records = _parse_records(payload.get("records"))
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    groups, pending, solo, unmatched, by_id = _pair_records(records)
     return JsonResponse({
-        "groups": groups, "pending": pending, "unmatched": unmatched, "suggestions": suggestions,
+        "groups": groups,
+        "pending": pending,
+        "solo": solo,
+        "unmatched": unmatched,
+        "suggestions": _field_suggestions(groups, by_id),
+    })
+
+
+AGENT_MAX_ROUNDS = 3
+AGENT_MAX_REREADS = 6
+_AGENT_UNRESOLVED_KINDS = (Attachment.KIND_INVOICE, Attachment.KIND_PAYMENT)
+_AGENT_FIELDS = ("kind", "amount", "order_no", "merchant_no", "invoice_no",
+                 "remark_order_no", "handwritten_notes", "invoice_amount")
+
+
+def _unresolved_ids(pending, solo, unmatched, by_id):
+    """待确认组、单边发票组与未配对里的发票/支付记录 id（智能体的重读对象，去重保序）。"""
+    ids = [rid for group in pending for rid in group]
+    ids += [rid for group in solo for rid in group]
+    ids += [entry["id"] for entry in unmatched if by_id[entry["id"]].get("kind") in _AGENT_UNRESOLVED_KINDS]
+    seen, result = set(), []
+    for rid in ids:
+        if rid not in seen:
+            seen.add(rid)
+            result.append(rid)
+    return result
+
+
+@require_POST
+@login_required
+def batch_agent_round(request):
+    """配对智能体一轮（ADR-0008）：定向重读未决文件，合并修正字段后重跑配对。
+
+    请求 {session_id, records}；返回 {actions, records, groups, pending, solo, unmatched,
+    suggestions, done}。done = 无未决发票/支付，或本轮重读没有任何字段改善（提前止损）。
+    """
+    try:
+        payload = json.loads(request.body or "{}")
+    except ValueError:
+        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+    try:
+        session = staging.session_dir(payload.get("session_id"), request.user.id)
+        records = _parse_records(payload.get("records"))
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    groups, pending, solo, unmatched, by_id = _pair_records(records)
+    targets = _unresolved_ids(pending, solo, unmatched, by_id)[:AGENT_MAX_REREADS]
+    actions, changed = [], False
+    for rid in targets:
+        record = by_id[rid]
+        label = record.get("filename") or rid
+        try:
+            path = staging.file_path(session, record.get("file_id"))
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
+        candidates = [
+            pair_summary(other) for other in records
+            if other["id"] != rid and other.get("kind") in _AGENT_UNRESOLVED_KINDS
+        ][:20]
+        hints = json.dumps({
+            "本文件名": record.get("filename"),
+            "已知信息": pair_summary(record),
+            "其他未配对记录": candidates,
+        }, ensure_ascii=False)
+        updated = vision.reread(path.read_bytes(), staging.file_label(path), hints)
+        if not updated:
+            actions.append({"file": label, "text": "重读失败，保留原识别结果"})
+            continue
+        diffs = []
+        for key in _AGENT_FIELDS:
+            new = updated.get(key)
+            if new not in (None, "") and new != record.get(key):
+                diffs.append(f"{key}：{record.get(key) or '空'} → {new}")
+                record[key] = new
+        if diffs:
+            changed = True
+            actions.append({"file": label, "text": f"重读修正 {len(diffs)} 处：" + "；".join(diffs)})
+        else:
+            actions.append({"file": label, "text": "重读无修正，字段维持原识别"})
+    if changed:
+        groups, pending, solo, unmatched, by_id = _pair_records(records)
+    still_open = _unresolved_ids(pending, solo, unmatched, by_id)
+    return JsonResponse({
+        "actions": actions,
+        "records": _json_records(records),
+        "groups": groups,
+        "pending": pending,
+        "solo": solo,
+        "unmatched": unmatched,
+        "suggestions": _field_suggestions(groups, by_id),
+        "done": not changed or not still_open,
     })
 
 
 @require_POST
 @login_required
 def batch_submit(request):
-    """按确认后的分组计划一次性创建多条待审核条目；任一校验失败整体拒绝，不建任何条目。"""
-    uploads = request.FILES.getlist("files")
+    """按确认后的分组计划一次性创建待审核条目；文件取自配对会话暂存（ADR-0008）。
+
+    单边发票组放行：无支付记录时实付款强制 0.00（条目自带缺支付警告，审核不通过后
+    学生从看板补传支付记录）；单边支付组仍整体拒绝。任一校验失败不建任何条目。
+    """
     try:
-        plan = json.loads(request.POST.get("plan") or "")
+        payload = json.loads(request.body or "{}")
     except ValueError:
-        return JsonResponse({"error": "plan 不是合法 JSON"}, status=400)
-    raw_groups = plan.get("groups") if isinstance(plan, dict) else None
+        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+    raw_groups = payload.get("groups") if isinstance(payload, dict) else None
     if not isinstance(raw_groups, list) or not raw_groups:
         return JsonResponse({"error": "缺少分组计划"}, status=400)
+    try:
+        session = staging.session_dir(payload.get("session_id"), request.user.id)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
     batch = Batch.objects.first()
     if batch is None:
         return JsonResponse({"error": "请先创建批次"}, status=400)
 
-    prepared = []
+    prepared, opened = [], []
     for number, group in enumerate(raw_groups, start=1):
         if not isinstance(group, dict):
             return JsonResponse({"error": f"第 {number} 组信息无效"}, status=400)
@@ -497,11 +667,6 @@ def batch_submit(request):
             return JsonResponse({"error": f"第 {number} 组类别无效"}, status=400)
         try:
             actual_amount = plan_decimal(group.get("actual_amount"), "实付金额")
-        except ValueError as exc:
-            return JsonResponse({"error": f"第 {number} 组{exc}"}, status=400)
-        if actual_amount is None:
-            return JsonResponse({"error": f"第 {number} 组缺少实付金额"}, status=400)
-        try:
             invoice_amount = plan_decimal(group.get("invoice_amount"), "发票金额")
         except ValueError as exc:
             return JsonResponse({"error": f"第 {number} 组{exc}"}, status=400)
@@ -516,40 +681,58 @@ def batch_submit(request):
             if kind not in KIND_LABELS:
                 return JsonResponse({"error": f"第 {number} 组含未识别类型的文件，请先修正类型"}, status=400)
             try:
-                upload = uploads[int(entry.get("index"))]
-            except (TypeError, ValueError, IndexError):
-                return JsonResponse({"error": f"第 {number} 组文件序号无效"}, status=400)
-            error = validate_upload(upload)
-            if error:
-                return JsonResponse({"error": f"{upload.name}：{error}"}, status=400)
-            try:
-                attachments.append(build_attachment(kind, upload, entry))
+                path = staging.file_path(session, entry.get("file_id"))
             except ValueError as exc:
-                return JsonResponse({"error": f"{upload.name}：{exc}"}, status=400)
+                return JsonResponse({"error": f"第 {number} 组{exc}"}, status=400)
+            name = staging.file_label(path)
+            error = validate_upload(SimpleNamespace(name=name, size=path.stat().st_size))
+            if error:
+                return JsonResponse({"error": f"{name}：{error}"}, status=400)
+            handle = path.open("rb")
+            opened.append(handle)
+            try:
+                attachments.append(build_attachment(kind, File(handle, name=name), entry))
+            except ValueError as exc:
+                for opened_handle in opened:
+                    opened_handle.close()
+                return JsonResponse({"error": f"{name}：{exc}"}, status=400)
             kinds.add(kind)
-        if Attachment.KIND_INVOICE not in kinds or Attachment.KIND_PAYMENT not in kinds:
-            return JsonResponse({"error": f"第 {number} 组缺少发票或支付记录，无法报销"}, status=400)
+        if Attachment.KIND_INVOICE not in kinds:
+            for opened_handle in opened:
+                opened_handle.close()
+            return JsonResponse({"error": f"第 {number} 组缺少发票，无法报销"}, status=400)
+        if Attachment.KIND_PAYMENT not in kinds:
+            actual_amount = Decimal("0.00")  # 单边发票组：等补传支付记录后再修订
+        elif actual_amount is None:
+            for opened_handle in opened:
+                opened_handle.close()
+            return JsonResponse({"error": f"第 {number} 组缺少实付金额"}, status=400)
         prepared.append((title, category, actual_amount, invoice_amount, attachments))
 
-    with transaction.atomic():
-        for title, category, actual_amount, invoice_amount, attachments in prepared:
-            item = Item(
-                owner=request.user,
-                batch=batch,
-                position=Item.next_position(),
-                title=title,
-                category=category,
-                actual_amount=actual_amount,
-                invoice_amount=invoice_amount,
-                status=Item.STATUS_PENDING,
-            )
-            mark_attachments(item, [attachment_entry(a) for a in attachments], [])
-            item.save()
-            for attachment in attachments:
-                attachment.item = item
-                attachment.save()
-            for warning in check_item(item):
-                messages.warning(request, f"{title}：{warning}")
+    try:
+        with transaction.atomic():
+            for title, category, actual_amount, invoice_amount, attachments in prepared:
+                item = Item(
+                    owner=request.user,
+                    batch=batch,
+                    position=Item.next_position(),
+                    title=title,
+                    category=category,
+                    actual_amount=actual_amount,
+                    invoice_amount=invoice_amount,
+                    status=Item.STATUS_PENDING,
+                )
+                mark_attachments(item, [attachment_entry(a) for a in attachments], [])
+                item.save()
+                for attachment in attachments:
+                    attachment.item = item
+                    attachment.save()
+                for warning in check_item(item):
+                    messages.warning(request, f"{title}：{warning}")
+    finally:
+        for opened_handle in opened:
+            opened_handle.close()
+    staging.cleanup(payload.get("session_id"))
     messages.success(request, f"已批量提交 {len(prepared)} 条，等待管理员审核。")
     return redirect("board")
 

@@ -7,7 +7,7 @@ kind ∈ invoice/payment/refund/unknown，amount 为 Decimal 或 None；多余�
 
 规则按序执行：
 1. 单号互证：发票备注单号 = 支付平台单号/商户单号 → 同组；同单号多张发票、多笔支付并入，
-   一张发票命中多组支付时并为一组。
+   一张发票命中多组支付时并为一组。同发票号码的多张发票视为重复拍摄并为一组。
 2. 退款挂组：退款单号命中任一支付的同名字段 → 挂入该支付所在组；挂不上单号时，金额与某唯一组
    的支付合计相等（容差 AMOUNT_TOLERANCE）→ 挂入；仍挂不上进 unmatched。
 3. 金额兜底：仅剩单边发票组与单边支付组时，总额相等且两侧各唯一候选 → 成组；任一侧多候选 →
@@ -47,6 +47,16 @@ def pair(records):
         if remark:
             for pid in payments_by_no.get(remark, []):
                 union.union(invoice["id"], pid)
+
+    # 规则 1b 同发票号码并组：同号视为同一张发票的重复拍摄
+    invoices_by_no = {}
+    for invoice in invoices:
+        no = _norm(invoice.get("invoice_no"))
+        if no:
+            invoices_by_no.setdefault(no, []).append(invoice["id"])
+    for ids in invoices_by_no.values():
+        for rid in ids[1:]:
+            union.union(ids[0], rid)
 
     # 规则 2a 退款单号挂组：退款单号命中任一支付的同名字段
     for refund in refunds:

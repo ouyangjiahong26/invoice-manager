@@ -2,6 +2,7 @@
 {% block title %}批量提交{% endblock %}
 
 {% block content %}
+<div class="batch-layout">
 <div class="card" style="max-width:900px">
   <h1>批量提交报销条目</h1>
   {% if vision_configured %}
@@ -10,7 +11,7 @@
   <div class="attach-block">
     <label for="batch-upload" style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">混合上传票据文件（发票 / 支付记录 / 退款记录）</label>
     <input type="file" id="batch-upload" multiple accept=".jpg,.jpeg,.png,.pdf">
-    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组；确认分组后一次性提交多条条目。未配对的文件不生成条目。</div>
+    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组；规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）；其余未配对文件不生成条目。</div>
   </div>
 
   <div class="attach-grid" id="file-cards"></div>
@@ -24,6 +25,10 @@
   <div id="pair-result" hidden>
     <h2>分组预览</h2>
     <div class="helptext">{{ category_notes }}</div>
+    <div id="agent-entry" hidden>
+      <button type="button" id="agent-button">智能体补配</button>
+      <span class="helptext">对规则配不上的文件做多轮定向重读</span>
+    </div>
     <div id="group-list"></div>
 
     <h2>待确认组</h2>
@@ -37,6 +42,17 @@
   {% else %}
   <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}">单条提交</a>。</div>
   {% endif %}
+</div>
+
+<aside class="card ai-log-card">
+  <h2 style="font-size:15px;margin:0 0 8px">AI 处理流程</h2>
+  <ul class="ai-log" id="ai-log"><li class="ai-log-empty">等待上传文件…</li></ul>
+</aside>
+</div>
+
+<div id="zoom-overlay" hidden>
+  <button type="button" id="zoom-close">关闭</button>
+  <div id="zoom-body"></div>
 </div>
 
 {{ categories|json_script:"categories-data" }}
@@ -83,6 +99,22 @@
   .unmatched-row select { padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 12px; }
   .pending-row { margin-top: 8px; }
   .pending-row select { padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 12px; }
+  .batch-layout { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .batch-layout > .card { flex: 1 1 640px; }
+  .ai-log-card { flex: 0 1 300px; position: sticky; top: 12px; max-height: 80vh; overflow: auto; }
+  .ai-log { list-style: none; margin: 0; padding: 0; font-size: 12px; color: #57606a; }
+  .ai-log li { padding: 4px 0; border-bottom: 1px dashed #eaeef2; word-break: break-all; }
+  .ai-log li.ai-log-head { color: #1f2328; font-weight: 600; }
+  .ai-log li.ai-log-empty { color: #8c959f; }
+  #zoom-overlay { position: fixed; inset: 0; background: #000000cc; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+  #zoom-overlay[hidden] { display: none; }
+  #zoom-body { max-width: 92vw; max-height: 92vh; overflow: auto; background: #fff; border-radius: 8px; padding: 8px; }
+  #zoom-body img { max-width: 88vw; max-height: 84vh; display: block; }
+  #zoom-body iframe { width: 84vw; height: 84vh; border: 0; display: block; }
+  #zoom-close { position: fixed; top: 14px; right: 18px; z-index: 1001; }
+  .chip { cursor: zoom-in; }
+  .chip img { width: 56px; height: 56px; }
+  .chip .chip-pdf { cursor: zoom-in; width: 56px; height: 56px; font-size: 13px; }
 </style>
 
 <script>
@@ -115,21 +147,58 @@
   };
 
   var csrf = document.querySelector("#batch-csrf [name=csrfmiddlewaretoken]").value;
+  var stageUrl = "{% url 'batch_stage' %}";
   var detectUrl = "{% url 'batch_detect' %}";
   var prefillUrl = "{% url 'item_prefill' %}";
   var pairUrl = "{% url 'batch_pair' %}";
+  var agentRoundUrl = "{% url 'batch_agent_round' %}";
   var submitUrl = "{% url 'batch_submit' %}";
   var boardUrl = "{% url 'board' %}";
   var categories = JSON.parse(document.getElementById("categories-data").textContent);
 
   var cards = [];          // 卡片元素，下标即记录 id
+  var sessionId = null;    // 配对会话 id（服务端暂存文件的引用凭据）
   var detecting = 0;       // 识别中的卡片数
   var queueActive = false; // 整批识别队列进行中（卡片间隙 detecting 会瞬时归零）
   var paired = false;
-  var groups = [];         // {members: [卡片], title, categoryId, actual, invoice, suggestion}
+  var agentRounds = 0;     // 智能体已跑轮数
+  var groups = [];         // {members: [卡片], title, categoryId, actual, invoice, suggestion, solo}
   var pendingGroups = [];  // [[卡片]]
   var unmatched = [];      // {card, reason}
   var ignored = new Set();
+
+  // ---------- AI 流程面板与放大浮层 ----------
+  function logLine(text, head) {
+    var box = document.getElementById("ai-log");
+    var empty = box.querySelector(".ai-log-empty");
+    if (empty) empty.remove();
+    var li = document.createElement("li");
+    if (head) li.className = "ai-log-head";
+    li.textContent = text;
+    box.insertBefore(li, box.firstChild);
+  }
+
+  function showZoom(card) {
+    var body = document.getElementById("zoom-body");
+    body.innerHTML = "";
+    if (/\.pdf$/i.test(card._file.name)) {
+      var frame = document.createElement("iframe");
+      frame.src = card._url;
+      body.appendChild(frame);
+    } else {
+      var img = document.createElement("img");
+      img.src = card._url;
+      body.appendChild(img);
+    }
+    document.getElementById("zoom-overlay").hidden = false;
+  }
+  document.getElementById("zoom-close").addEventListener("click", function () {
+    document.getElementById("zoom-overlay").hidden = true;
+    document.getElementById("zoom-body").innerHTML = "";  // 关闭即卸载 iframe，停掉渲染
+  });
+  document.getElementById("zoom-overlay").addEventListener("click", function (e) {
+    if (e.target === this) document.getElementById("zoom-close").click();
+  });
 
   function value(card, role) {
     var el = card.querySelector('[data-role="' + role + '"]');
@@ -154,10 +223,11 @@
     box.hidden = false;
   }
 
-  function addCard(file) {
+  function addCard(file, fileId) {
     var card = document.getElementById("file-card-template").content.firstElementChild.cloneNode(true);
     card._index = cards.length;
     card._file = file;
+    card._fileId = fileId;
     card._url = URL.createObjectURL(file);
     card._ocr = {};
     card.querySelector(".attach-name").textContent = file.name;
@@ -223,9 +293,12 @@
   // 上传后首识：调 batch_detect 判类型并回填；失败停在 unknown，可手动改类型或忽略
   function detectCard(card) {
     detecting++;
-    var data = new FormData();
-    data.append("file", card._file);
-    return fetch(detectUrl, {method: "POST", body: data, credentials: "same-origin", headers: {"X-CSRFToken": csrf}})
+    return fetch(detectUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
+      body: JSON.stringify({session_id: sessionId, file_id: card._fileId})
+    })
       .then(function (resp) { return resp.ok ? resp.json() : {}; })
       .then(function (result) {
         result = result || {};
@@ -238,6 +311,8 @@
         renderKindFields(card, kind);
         applyResult(card, kind, result);
         status(card, "已识别（来源：" + (result._source === "text" ? "文本" : "图像") + "）", "ok");
+        var amount = number(card);
+        logLine(card._file.name + "：" + KIND_LABELS[kind] + (amount !== null ? " ¥" + amount.toFixed(2) : ""));
       })
       .catch(function () { status(card, "识别失败，可手动改类型填写或忽略", "warn"); })
       .then(settle);
@@ -307,31 +382,50 @@
   }
 
   uploadInput.addEventListener("change", function () {
-    var queue = Array.prototype.slice.call(uploadInput.files, 0).map(addCard);
+    var files = Array.prototype.slice.call(uploadInput.files, 0);
+    if (!files.length) return;
     queueActive = true;
     refreshSummary();
     uploadInput.value = "";  // 允许再次追加同名文件
-    function next() {
-      var card = queue.shift();
-      if (!card) {
-        queueActive = false;  // 整批识别完才放开配对，避免卡片间瞬时窗口提前触发
+    // 先整体暂存到配对会话（ADR-0008），再串行识别
+    var data = new FormData();
+    files.forEach(function (file) { data.append("files", file, file.name); });
+    fetch(stageUrl, {method: "POST", body: data, credentials: "same-origin", headers: {"X-CSRFToken": csrf}})
+      .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(resp); })
+      .then(function (result) {
+        sessionId = result.session_id;
+        logLine("已上传 " + result.files.length + " 个文件，开始逐张识别", true);
+        var queue = files.map(function (file, i) { return addCard(file, result.files[i].id); });
+        function next() {
+          var card = queue.shift();
+          if (!card) {
+            queueActive = false;  // 整批识别完才放开配对，避免卡片间瞬时窗口提前触发
+            refreshSummary();
+            return;
+          }
+          Promise.resolve(detectCard(card)).then(next);  // 串行发起，避免并发轰炸识别接口
+        }
+        next();
+      })
+      .catch(function () {
+        queueActive = false;
+        showError("文件上传失败，请重试");
         refreshSummary();
-        return;
-      }
-      Promise.resolve(detectCard(card)).then(next);  // 串行发起，避免并发轰炸识别接口
-    }
-    next();
+      });
   });
 
   function recordOf(card) {
     return {
       id: card._index,
+      file_id: card._fileId,
       kind: kindOf(card),
       amount: number(card),
       order_no: value(card, "order_no"),
       merchant_no: value(card, "merchant_no"),
       invoice_no: value(card, "invoice_no"),
       remark_order_no: value(card, "remark_order_no"),
+      handwritten_notes: (card._ocr && card._ocr.handwritten_notes) || "",
+      filename: card._file.name,
       items_summary: (card._ocr && card._ocr.items_summary) || ""
     };
   }
@@ -346,10 +440,17 @@
       method: "POST",
       credentials: "same-origin",
       headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
-      body: JSON.stringify({records: active.map(recordOf)})
+      body: JSON.stringify({session_id: sessionId, records: active.map(recordOf)})
     })
       .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(resp); })
-      .then(function (data) { buildState(data || {}); renderGroups(); })
+      .then(function (data) {
+        buildState(data || {});
+        renderGroups();
+        logLine("规则配对：成组 " + groups.length + "，待确认 " + pendingGroups.length
+          + "，单边发票 " + soloCount() + "，未配对 " + unmatched.length, true);
+        if (unresolvedLeft()) runAgentRounds();
+        else document.getElementById("pair-result").scrollIntoView({behavior: "smooth"});
+      })
       .catch(function () { showError("配对请求失败，请重试"); })
       .then(function () {
         button.disabled = false;
@@ -357,15 +458,105 @@
       });
   });
 
-  function newGroup(members, suggestion) {
-    return {
+  function soloCount() {
+    return groups.filter(function (group) { return group.solo; }).length;
+  }
+
+  function unresolvedLeft() {
+    var inPending = pendingGroups.some(function (members) {
+      return members.some(function (card) { return !ignored.has(card); });
+    });
+    var openUnmatched = unmatched.some(function (entry) {
+      return !ignored.has(entry.card)
+        && (kindOf(entry.card) === "invoice" || kindOf(entry.card) === "payment");
+    });
+    return inPending || openUnmatched;
+  }
+
+  // 把服务端合并后的记录写回卡片（智能体重读修正的字段）
+  function applyRecords(records) {
+    var byIndex = {};
+    cards.forEach(function (card) { byIndex[card._index] = card; });
+    (records || []).forEach(function (record) {
+      var card = byIndex[record.id];
+      if (!card) return;
+      var kind = record.kind && FIELD_DEFS[record.kind] ? record.kind : "unknown";
+      card.querySelector('[data-role="kind"]').value = kind;
+      renderKindFields(card, kind);
+      card._ocr = card._ocr || {};
+      if (record.handwritten_notes) card._ocr.handwritten_notes = record.handwritten_notes;
+      if (record.items_summary) card._ocr.items_summary = record.items_summary;
+      [["amount", "amount"], ["order_no", "order_no"], ["merchant_no", "merchant_no"],
+       ["invoice_no", "invoice_no"], ["remark_order_no", "remark_order_no"]].forEach(function (pair) {
+        var input = card.querySelector('[data-role="' + pair[1] + '"]');
+        if (input && record[pair[0]] !== null && record[pair[0]] !== undefined) {
+          input.value = typeof record[pair[0]] === "number" ? record[pair[0]].toFixed(2) : record[pair[0]];
+        }
+      });
+    });
+  }
+
+  // 智能体分轮循环（ADR-0008）：每轮一个请求，逐轮渲染动作；至多 3 轮或服务端 done
+  function runAgentRounds() {
+    document.getElementById("agent-entry").hidden = false;
+    var button = document.getElementById("agent-button");
+    button.disabled = true;
+    button.textContent = "智能体补配中（第 " + (agentRounds + 1) + " 轮）…";
+    fetch(agentRoundUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
+      body: JSON.stringify({session_id: sessionId, records: activeRecords()})
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(resp); })
+      .then(function (data) {
+        agentRounds++;
+        (data.actions || []).forEach(function (action) {
+          logLine("第 " + agentRounds + " 轮 · " + action.file + "：" + action.text);
+        });
+        applyRecords(data.records);
+        buildState(data || {});
+        renderGroups();
+        if (data.done || agentRounds >= 3 || !unresolvedLeft()) {
+          logLine("智能体结束：成组 " + groups.length + "，待确认 " + pendingGroups.length
+            + "，单边发票 " + soloCount() + "，未配对 " + unmatched.length, true);
+          button.textContent = "智能体补配";
+          button.disabled = true;
+        } else {
+          runAgentRounds();  // 还有未决记录且本轮有改善，继续下一轮
+        }
+      })
+      .catch(function () {
+        logLine("智能体请求失败，可点按钮重试", true);
+        button.disabled = false;
+        button.textContent = "智能体补配";
+      });
+  }
+
+  document.getElementById("agent-button").addEventListener("click", function () {
+    if (!this.disabled) runAgentRounds();
+  });
+
+  function activeRecords() {
+    return cards.filter(function (card) { return !ignored.has(card); }).map(recordOf);
+  }
+
+  function newGroup(members, suggestion, solo) {
+    var group = {
       members: members,
       suggestion: suggestion || null,
+      solo: !!solo,
       title: suggestion && suggestion.title ? suggestion.title : "",
       categoryId: suggestion && suggestion.category_id ? String(suggestion.category_id) : "",
       actual: undefined,
       invoice: undefined
     };
+    if (solo) {
+      group.actual = "0.00";  // 单边发票组：实付款固定 0.00，等补传支付记录
+      var invoiceCard = members.filter(function (c) { return kindOf(c) === "invoice"; })[0];
+      group.title = (invoiceCard && invoiceCard._ocr && invoiceCard._ocr.items_summary) || "";
+    }
+    return group;
   }
 
   function buildState(data) {
@@ -375,6 +566,11 @@
     var suggestions = (data.suggestions && data.suggestions.suggestions) || [];
     groups = (data.groups || []).map(function (ids, i) {
       return newGroup(ids.map(function (id) { return byIndex[id]; }).filter(Boolean), suggestions[i] || null);
+    });
+    // 单边发票组并进 groups 一起渲染与提交（实付款 0.00，缺支付警告）
+    (data.solo || []).forEach(function (ids) {
+      var members = ids.map(function (id) { return byIndex[id]; }).filter(Boolean);
+      if (members.length) groups.push(newGroup(members, null, true));
     });
     pendingGroups = (data.pending || []).map(function (ids) {
       return ids.map(function (id) { return byIndex[id]; }).filter(Boolean);
@@ -391,10 +587,14 @@
       var pdf = document.createElement("span");
       pdf.className = "chip-pdf";
       pdf.textContent = "PDF";
+      pdf.title = "点击预览";
+      pdf.addEventListener("click", function () { showZoom(card); });
       row.appendChild(pdf);
     } else {
       var img = document.createElement("img");
       img.src = card._url;
+      img.title = "点击放大";
+      img.addEventListener("click", function () { showZoom(card); });
       row.appendChild(img);
     }
   }
@@ -467,7 +667,10 @@
     var hasInvoice = members.some(function (c) { return kindOf(c) === "invoice"; });
     var hasPayment = members.some(function (c) { return kindOf(c) === "payment"; });
     var text = "发票合计 ¥" + sums.invoice.toFixed(2) + " · 支付−退款 ¥" + sums.net.toFixed(2);
-    if (!hasInvoice || !hasPayment) {
+    if (group.solo) {
+      text += "；单边发票组：缺支付记录，实付款按 0.00 提交，审核不通过后从看板补传支付记录";
+      el.className = "reconcile warn";
+    } else if (!hasInvoice || !hasPayment) {
       text += "；缺少" + (hasInvoice ? "支付记录" : "发票") + "，不能提交";
       el.className = "reconcile warn";
     } else if (Math.abs(sums.invoice - sums.net) > AMOUNT_TOLERANCE) {
@@ -487,7 +690,7 @@
     el.className = "group-card";
     var head = document.createElement("div");
     var headText = document.createElement("b");
-    headText.textContent = "组 " + (i + 1);
+    headText.textContent = "组 " + (i + 1) + (group.solo ? "（单边发票组）" : "");
     head.appendChild(headText);
     el.appendChild(head);
 
@@ -510,7 +713,6 @@
     if (group.actual === undefined) group.actual = sums.net.toFixed(2);
     if (group.invoice === undefined) group.invoice = sums.invoice.toFixed(2);
     fields.appendChild(fieldInput("明细", "text", group.title, function (v) { group.title = v; }));
-
     var catLabel = document.createElement("label");
     catLabel.textContent = "类别";
     var catSelect = document.createElement("select");
@@ -532,7 +734,13 @@
     catLabel.appendChild(catSelect);
     fields.appendChild(catLabel);
 
-    fields.appendChild(fieldInput("实付款", "number", group.actual, function (v) { group.actual = v; }));
+    var actualInput = fieldInput("实付款", "number", group.actual, function (v) { group.actual = v; });
+    if (group.solo) {
+      actualInput.querySelector("input").value = "0.00";
+      actualInput.querySelector("input").readOnly = true;
+      actualInput.title = "单边发票组实付款固定 0.00";
+    }
+    fields.appendChild(actualInput);
     fields.appendChild(fieldInput("发票金额", "number", group.invoice, function (v) { group.invoice = v; }));
     el.appendChild(fields);
 
@@ -666,8 +874,12 @@
   function groupValid(group) {
     var members = groupMembers(group);
     var hasInvoice = members.some(function (c) { return kindOf(c) === "invoice"; });
+    if (!hasInvoice) return false;
+    if (group.solo) {  // 单边发票组：实付款固定 0.00，只要求明细与类别
+      return !!(group.title || "").trim() && !!String(group.categoryId || "").trim();
+    }
     var hasPayment = members.some(function (c) { return kindOf(c) === "payment"; });
-    return hasInvoice && hasPayment
+    return hasPayment
       && !!(group.title || "").trim()
       && !!String(group.categoryId || "").trim()
       && !!(group.actual || "").trim() && !isNaN(parseFloat(group.actual));
@@ -677,9 +889,11 @@
     groups.forEach(updateGroupLine);
     var button = document.getElementById("submit-button");
     var invalid = groups.filter(function (group) { return !groupValid(group); }).length;
-    button.textContent = "提交 " + groups.length + " 条";
+    var soloN = soloCount();
+    button.textContent = "提交 " + groups.length + " 条"
+      + (soloN ? "（含 " + soloN + " 条单边发票）" : "");
     button.disabled = !groups.length || invalid > 0;
-    button.title = invalid ? "有 " + invalid + " 个组未满足提交条件（缺发票/支付记录，或缺明细/类别/实付款）" : "";
+    button.title = invalid ? "有 " + invalid + " 个组未满足提交条件（缺发票，或缺明细/类别/实付款）" : "";
   }
 
   function renderGroups() {
@@ -704,16 +918,6 @@
     var button = this;
     button.disabled = true;
     button.textContent = "提交中…";
-    var ordered = [];
-    groups.forEach(function (group) {
-      groupMembers(group).forEach(function (card) {
-        if (ordered.indexOf(card) < 0) ordered.push(card);
-      });
-    });
-    var data = new FormData();
-    ordered.forEach(function (card) {
-      data.append("files", card._file, card._file.name);
-    });
     var planGroups = groups.map(function (group) {
       return {
         title: (group.title || "").trim(),
@@ -722,7 +926,7 @@
         invoice_amount: (group.invoice || "").trim() === "" ? null : parseFloat(group.invoice),
         files: groupMembers(group).map(function (card) {
           return {
-            index: ordered.indexOf(card),
+            file_id: card._fileId,
             kind: kindOf(card),
             amount: number(card),
             order_no: value(card, "order_no"),
@@ -733,10 +937,12 @@
         })
       };
     });
-    data.append("plan", JSON.stringify({groups: planGroups}));
     fetch(submitUrl, {
-      method: "POST", body: data, credentials: "same-origin", redirect: "manual",
-      headers: {"X-CSRFToken": csrf},
+      method: "POST",
+      credentials: "same-origin",
+      redirect: "manual",
+      headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
+      body: JSON.stringify({session_id: sessionId, groups: planGroups})
     })
       .then(function (resp) {
         // 成功走 302 → 看板：manual 不跟随跳转，保住 messages 只在落地页渲染一次

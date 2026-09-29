@@ -54,7 +54,7 @@ def llm_merge_groups(by_id, groups, pending, unmatched):
 
 
 def pair_summary(record):
-    """LLM 配对用的记录摘要。"""
+    """LLM 配对用的记录摘要（含智能体扩展证据：发票号码、手写标注、文件名）。"""
     amount = record.get("amount")
     return {
         "id": record["id"],
@@ -63,6 +63,9 @@ def pair_summary(record):
         "order_no": record.get("order_no") or "",
         "merchant_no": record.get("merchant_no") or "",
         "remark_order_no": record.get("remark_order_no") or "",
+        "invoice_no": record.get("invoice_no") or "",
+        "handwritten_notes": record.get("handwritten_notes") or "",
+        "filename": record.get("filename") or "",
     }
 
 

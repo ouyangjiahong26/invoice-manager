@@ -14,6 +14,7 @@ Django 6.1 项目，项目配置包 `config`，唯一 app `core`，全函数视�
   │                     ├─ attachment_update/attachment_delete：已保存附件行内编辑/删除
   │                     ├─ file_serve：/items/attachments/<pk>/file/ 鉴权下发（ADR-0002）
   │                     ├─ prefill：附件文件 → DeepSeek 识别 → JSON 回填（无状态）
+  │                     ├─ 批量配对 /items/batch/：stage 暂存上传 → detect 逐张识别 → pair 规则配对 → agent-round 配对智能体多轮定向重读（ADR-0008）→ submit 按组建条目；单边发票组可提交（实付 0.00）
   │                     └─ export_excel/export_zip（staff only）：按批次导出 approved 条目
   └─ /admin/：条目审核（改 status）、类别/批次管理（含 description 参考说明）
 core.validation.check_item：五条警告规则（附件合计、实付>发票、平台单号、深色支付记录、抬头/税号），保存后共用，不阻断
@@ -30,7 +31,7 @@ core.validation.check_item：五条警告规则（附件合计、实付>发票�
 
 ## Key Directories
 - `config/` — settings/urls/wsgi/asgi；settings 全环境变量驱动
-- `core/` — models（Batch、Category、Item、Attachment、AuditLog）、views、forms、validation、vision、pairing、audit、attachments（附件构造/解析共享工具）、suggest（LLM 配对/建议共享工具）、admin、management/commands（import_batch）、templates/core/
+- `core/` — models（Batch、Category、Item、Attachment、AuditLog）、views、forms、validation、vision、pairing、staging（配对会话暂存）、audit、attachments（附件构造/解析共享工具）、suggest（LLM 配对/建议共享工具）、admin、management/commands（import_batch）、templates/core/
 - `docs/agents/` — 工程技能 harness 配置（issue tracker、分诊标签、领域文档约定）
 - `docs/adr/` — 架构决策记录；`CONTEXT.md` — 领域术语表
 
