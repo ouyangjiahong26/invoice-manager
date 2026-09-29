@@ -58,6 +58,8 @@ uv run python manage.py import_batch <目录> [--batch 名称] [--dry-run]   # A
 ## Testing & QA
 `python manage.py test`（Django TestCase）。涉及文件导出/上传的测试需构造临时 `MEDIA_ROOT`。
 
+验收标准：真实报销批次按人名分文件夹整理，某人登录后把自己文件夹里的文件整批丢进批量提交，应全部正确识别并配对成组（对照人工最终整理版本判定）。验收数据私密，只放共享盘本地跑，路径与内容不入仓库、不上生产。
+
 ## 写作约定
 
 - 任何输出（代码注释、文档、commit 信息、聊天回复）不使用「」符号；需要引用时用双引号 ""。
