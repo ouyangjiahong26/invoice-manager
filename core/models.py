@@ -16,6 +16,19 @@ class Category(models.Model):
         return self.name
 
 
+class Batch(models.Model):
+    name = models.CharField("批次名称", max_length=100, unique=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "报销批次"
+        verbose_name_plural = "报销批次"
+
+    def __str__(self):
+        return self.name
+
+
 class Item(models.Model):
     STATUS_PENDING = "pending"
     STATUS_APPROVED = "approved"
@@ -46,11 +59,19 @@ class Item(models.Model):
     status = models.CharField(
         "状态", max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING
     )
+    batch = models.ForeignKey(
+        Batch,
+        on_delete=models.PROTECT,
+        related_name="items",
+        verbose_name="批次",
+    )
+    position = models.PositiveIntegerField("顺序", default=0)
+
     created_at = models.DateTimeField("提交时间", auto_now_add=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 
     class Meta:
-        ordering = ["-created_at"]
+        ordering = ["position", "id"]
         verbose_name = "报销条目"
         verbose_name_plural = "报销条目"
 
@@ -60,6 +81,10 @@ class Item(models.Model):
     @property
     def payer_name(self):
         return self.owner.get_full_name() or self.owner.username
+
+    @classmethod
+    def next_position(cls):
+        return (cls.objects.aggregate(m=models.Max("position"))["m"] or 0) + 1
 
     def attachment_of_kind(self, kind):
         """该条目下指定类型的第一张附件（配合 prefetch_related 零额外查询）。"""

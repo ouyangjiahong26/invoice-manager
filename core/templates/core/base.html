@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}报销看板{% endblock %}</title>
+  <title>{% block title %}报销管理{% endblock %}</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2328; }
@@ -11,24 +11,17 @@
     nav a { color: #fff; text-decoration: none; font-size: 14px; }
     nav .brand { font-weight: 700; font-size: 16px; margin-right: 8px; }
     nav .spacer { flex: 1; }
-    main { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+    main { max-width: 1280px; margin: 20px auto; padding: 0 16px; }
     .messages { list-style: none; padding: 0; margin: 0 0 16px; }
     .messages li { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 14px; }
     .messages .warning { background: #fff8c5; border: 1px solid #d4a72c; color: #7d4e00; }
     .messages .success { background: #dafbe1; border: 1px solid #4ac26b; color: #116329; }
     .messages .error { background: #ffebe9; border: 1px solid #ff818266; color: #a40e26; }
     .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-    .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-    .item { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; font-size: 14px; }
-    .item .title { font-weight: 600; margin-bottom: 6px; word-break: break-all; }
-    .item .meta { color: #57606a; margin-bottom: 6px; }
-    .item .amount { font-size: 18px; font-weight: 700; }
     .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid; }
     .badge.pending { color: #7d4e00; border-color: #d4a72c; background: #fff8c5; }
     .badge.approved { color: #116329; border-color: #4ac26b; background: #dafbe1; }
     .badge.rejected { color: #a40e26; border-color: #ff8182; background: #ffebe9; }
-    .item .links { margin-top: 8px; display: flex; gap: 10px; }
-    .item .links a { color: #1f6feb; text-decoration: none; font-size: 13px; }
     form.stack label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
     form.stack input, form.stack select { width: 100%; max-width: 420px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; }
     form.stack .helptext { font-size: 12px; color: #57606a; margin-top: 2px; }
@@ -70,27 +63,64 @@
     form.attach-row-form { margin-top: 6px; }
     form.attach-row-form label { display: block; font-size: 12px; color: #57606a; margin-top: 6px; }
     form.attach-row-form input, form.attach-row-form select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
-    /* 条目详情模态浮层（issue #13）：看板条目整卡可点，弹层按类型分组展示附件 */
-    .item.clickable { cursor: pointer; }
-    .item.clickable:hover { border-color: #1f6feb; }
-    .detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 12px; }
-    .detail-head .title { font-size: 18px; font-weight: 700; }
-    .detail-head .spacer { flex: 1; }
-    .detail-head a { color: #1f6feb; text-decoration: none; font-size: 13px; }
-    dialog.item-detail { border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; width: min(960px, 94vw); max-height: 86vh; overflow-y: auto; }
-    dialog.item-detail::backdrop { background: rgba(31, 35, 40, 0.45); }
+    /* 表格主视图与条目侧边栏（ADR-0007） */
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 10px; }
+    .toolbar .spacer, .panel-head .spacer { flex: 1; }
+    .toolbar-item { font-size: 13px; color: #57606a; display: flex; align-items: center; gap: 6px; }
+    .toolbar-item select, .toolbar-item input { padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; background: #fff; }
+    .toolbar .btn, .toolbar button, .toolbar summary { margin-top: 0; }
+    .toolbar .btn { background: #1f6feb; color: #fff; text-decoration: none; border-radius: 6px; padding: 7px 14px; font-size: 13px; }
+    .new-batch summary { cursor: pointer; font-size: 13px; color: #1f6feb; }
+    .new-batch form { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+    .new-batch input { padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; }
+    .table-wrap { overflow-x: auto; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; }
+    table.board-table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 980px; }
+    table.board-table th, table.board-table td { border-bottom: 1px solid #d0d7de; padding: 8px 10px; text-align: left; white-space: nowrap; }
+    table.board-table th { background: #f6f8fa; font-size: 13px; position: sticky; top: 0; }
+    table.board-table th.sortable { cursor: pointer; user-select: none; }
+    table.board-table th.sortable:hover { color: #1f6feb; }
+    table.board-table th.sortable[data-dir="asc"]::after { content: " ↑"; color: #1f6feb; }
+    table.board-table th.sortable[data-dir="desc"]::after { content: " ↓"; color: #1f6feb; }
+    table.board-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    table.board-table td.cell-title { white-space: normal; min-width: 200px; max-width: 360px; }
+    table.board-table td.editable { cursor: text; }
+    table.board-table td.cell-category.editable, table.board-table td.cell-status.editable,
+    table.board-table td.cell-payer.editable { cursor: pointer; }
+    table.board-table td.editable:hover { outline: 1px dashed #1f6feb; outline-offset: -2px; }
+    table.board-table tr[data-pk] { cursor: pointer; }
+    table.board-table tr.dragging { opacity: 0.4; }
+    table.board-table td.drag-handle { cursor: grab; color: #8c959f; letter-spacing: -1px; }
+    table.board-table .inline-editor { width: 100%; min-width: 90px; padding: 4px 6px; border: 1px solid #1f6feb; border-radius: 4px; font-size: 13px; }
+    table.board-table .empty-row td { color: #57606a; text-align: center; padding: 24px; }
+    .attach-count { color: #57606a; font-size: 13px; }
+    #panel-mask { position: fixed; inset: 0; background: rgba(31, 35, 40, 0.45); z-index: 40; }
+    #panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: #fff; border-left: 1px solid #d0d7de; box-shadow: -8px 0 24px rgba(31,35,40,0.12); z-index: 41; overflow-y: auto; padding: 16px 20px 40px; }
+    @media (max-width: 720px) { #panel { width: 100vw; } }
+    .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 12px; font-size: 14px; }
+    .panel-head b { font-size: 16px; }
+    .panel-head .meta { color: #57606a; font-size: 13px; }
+    .panel-head .panel-close { margin-top: 0; }
+    .panel-warnings { background: #fff8c5; border: 1px solid #d4a72c; color: #7d4e00; border-radius: 6px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
+    .panel-warnings div { margin-top: 2px; }
+    .panel-readonly { margin-bottom: 8px; }
+    table.panel-fields { border-collapse: collapse; font-size: 14px; width: 100%; }
+    table.panel-fields th { text-align: left; color: #57606a; font-weight: 600; padding: 6px 12px 6px 0; width: 80px; font-size: 13px; vertical-align: top; }
+    table.panel-fields td { padding: 6px 0; }
+    .panel-section { margin-top: 18px; }
+    .panel-section h4 { font-size: 13px; margin: 10px 0 4px; color: #57606a; }
+    table.panel-audit { border-collapse: collapse; font-size: 12px; width: 100%; }
+    table.panel-audit th, table.panel-audit td { border: 1px solid #d0d7de; padding: 5px 8px; text-align: left; vertical-align: top; }
+    table.panel-audit th { background: #f6f8fa; }
+    #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1f2328; color: #fff; padding: 10px 18px; border-radius: 6px; font-size: 13px; z-index: 60; max-width: 80vw; }
   </style>
 </head>
 <body>
 <nav>
-  <span class="brand">报销看板</span>
+  <span class="brand">报销管理</span>
   {% if user.is_authenticated %}
-    <a href="{% url 'board' %}">看板</a>
-    <a href="{% url 'item_create' %}">提交条目</a>
+    <a href="{% url 'board' %}">报销表格</a>
     <a href="{% url 'batch_create' %}">批量提交</a>
     {% if user.is_staff %}
-      <a href="{% url 'export_excel' %}">导出 Excel</a>
-      <a href="{% url 'export_zip' %}">导出 zip</a>
       <a href="/admin/">后台</a>
     {% endif %}
     <span class="spacer"></span>

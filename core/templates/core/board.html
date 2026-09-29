@@ -1,94 +1,848 @@
 {% extends "core/base.html" %}
+{% block title %}报销表格{% endblock %}
 
 {% block content %}
-<h1>报销看板</h1>
-<div class="filters" style="margin-bottom:8px">
-  <a href="{% url 'board' %}" {% if not status %}class="active"{% endif %}>全部</a>
-  <a href="{% url 'board' %}?status=pending" {% if status == 'pending' %}class="active"{% endif %}>待审核</a>
-  <a href="{% url 'board' %}?status=approved" {% if status == 'approved' %}class="active"{% endif %}>已通过</a>
-  <a href="{% url 'board' %}?status=rejected" {% if status == 'rejected' %}class="active"{% endif %}>已退回</a>
+<h1>报销表格</h1>
+
+{% if not batches %}
+  <div class="card">
+    {% if user.is_staff %}
+      <p>还没有报销批次。创建第一个批次后即可提交条目：</p>
+      <form method="post" action="{% url 'batch_add' %}" class="stack" style="max-width:420px">
+        {% csrf_token %}
+        <label for="new-batch-name">批次名称</label>
+        <input type="text" id="new-batch-name" name="name" maxlength="100" required
+               placeholder="如：20260924 课题组报销">
+        <button type="submit">创建批次</button>
+      </form>
+    {% else %}
+      <p>还没有报销批次，请联@管理员创建批次后再提交。</p>
+    {% endif %}
+  </div>
+{% else %}
+
+<div class="toolbar">
+  <label class="toolbar-item">批次
+    <select id="batch-select">
+      {% for b in batches %}
+        <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="toolbar-item">类别
+    <select id="category-select">
+      <option value="">全部</option>
+      {% for c in categories %}
+        <option value="{{ c.pk }}" {% if category_id == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="toolbar-item">付款人
+    <select id="payer-select">
+      <option value="">全部</option>
+      {% for p in payers %}
+        <option value="{{ p.pk }}" {% if payer_id == p.pk|stringformat:"s" %}selected{% endif %}>{{ p.get_full_name|default:p.username }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <form id="search-form" class="toolbar-item">
+    <input type="search" id="search-input" placeholder="搜索明细…" value="{{ q }}">
+  </form>
+
+  <span class="spacer"></span>
+
+  {% if user.is_staff %}
+    <details class="new-batch">
+      <summary>＋ 新建批次</summary>
+      <form method="post" action="{% url 'batch_add' %}">
+        {% csrf_token %}
+        <input type="text" name="name" maxlength="100" required placeholder="批次名称">
+        <button type="submit" class="secondary small">创建</button>
+      </form>
+    </details>
+    <a class="btn" href="{% url 'export_excel' %}?batch={{ current_batch.pk }}">导出 Excel</a>
+    <a class="btn" href="{% url 'export_zip' %}?batch={{ current_batch.pk }}">导出 zip</a>
+  {% endif %}
+  <button type="button" id="new-item-btn">＋ 新建条目</button>
 </div>
 
-{% for category, items in groups %}
-  <h2>{{ category.name }}（{{ items|length }}）</h2>
-  {% if items %}
-    <div class="items">
-      {% for item in items %}
-        <div class="item clickable" data-detail="{{ item.pk }}">
-          <div class="title">{{ item.title }}</div>
-          <div class="meta">付款人：{{ item.payer_name }}{% if item.first_payment.order_no %} · 平台单号 {{ item.first_payment.order_no }}{% endif %}</div>
-          <span class="amount">¥{{ item.actual_amount }}</span>
-          {% if item.invoice_amount %}<span class="meta">（发票 ¥{{ item.invoice_amount }}）</span>{% endif %}
-          <div style="margin-top:6px">
-            <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
-          </div>
-          <div class="links">
-            {% if item.first_payment %}<a href="{% url 'file_serve' item.first_payment.pk %}">支付记录</a>{% endif %}
-            {% if item.first_invoice %}<a href="{% url 'file_serve' item.first_invoice.pk %}">票据</a>{% endif %}
-            {% if item.owner_id == user.id or user.is_staff %}
-              <a href="{% url 'item_update' item.pk %}">编辑</a>
-            {% endif %}
-            {% if item.owner_id == user.id %}
-              <form method="post" action="{% url 'item_delete' item.pk %}" style="display:inline;margin-left:8px" onsubmit="return confirm('确定删除这条报销条目？删除后无法恢复，仅可在操作留痕中追溯。')">
-                {% csrf_token %}
-                <button type="submit" style="background:none;border:none;padding:0;color:#cf222e;cursor:pointer;font:inherit">删除</button>
-              </form>
-            {% endif %}
-          </div>
-        </div>
-        <dialog class="item-detail" id="item-detail-{{ item.pk }}">
-          <div class="detail-head">
-            <span class="title">{{ item.title }}</span>
-            <span class="meta">{{ item.category.name }} · 付款人：{{ item.payer_name }}</span>
-            <span class="amount">¥{{ item.actual_amount }}</span>
-            {% if item.invoice_amount %}<span class="meta">（发票 ¥{{ item.invoice_amount }}）</span>{% endif %}
-            <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
-            <span class="meta">{{ item.created_at|date:"Y-m-d" }} 提交</span>
-            <span class="spacer"></span>
-            {% if item.owner_id == user.id or user.is_staff %}
-              <a href="{% url 'item_update' item.pk %}">编辑</a>
-            {% endif %}
-          </div>
-          {% for kind, rows in item.attachment_groups.items %}
-            {% if rows %}
-              <h3>{{ rows.0.get_kind_display }}</h3>
-              <div class="attach-grid">
-                {% for row in rows %}
-                  <div class="attach-card">
-                    <div class="attach-preview">
-                      {% if row.is_pdf %}
-                        <iframe data-src="{% url 'file_serve' row.pk %}" title="{{ row.display_name }}"></iframe>
-                      {% else %}
-                        <img src="{% url 'file_serve' row.pk %}" alt="{{ row.display_name }}" loading="lazy">
-                      {% endif %}
-                    </div>
-                    <div class="attach-name">{{ row.display_name }}{% if row.amount %} · ¥{{ row.amount }}{% endif %}</div>
-                  </div>
-                {% endfor %}
-              </div>
-            {% endif %}
-          {% endfor %}
-        </dialog>
+<div class="filters" id="status-filters">
+  <a data-status="">全部</a>
+  {% for value, label in status_choices %}
+    <a data-status="{{ value }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div class="table-wrap">
+  <table class="board-table" id="board-table">
+    <thead>
+      <tr>
+        {% if user.is_staff %}<th class="drag-col"></th>{% endif %}
+        <th class="sortable num" data-col="seq">序号</th>
+        <th class="sortable">明细</th>
+        <th class="sortable">类别</th>
+        <th class="sortable num">实付款</th>
+        <th class="sortable num">发票金额</th>
+        <th class="sortable">付款人</th>
+        <th class="sortable">状态</th>
+        <th>附件</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="board-tbody">
+      {% for row in rows %}
+      <tr data-pk="{{ row.item.pk }}"
+          data-category-id="{{ row.item.category_id }}" data-owner-id="{{ row.item.owner_id }}"
+          data-status="{{ row.item.status }}" data-can-edit="{{ row.can_edit|yesno:'1,0' }}">
+        {% if user.is_staff %}<td class="drag-handle" title="拖拽调整类别内顺序">⋮⋮</td>{% endif %}
+        <td class="num seq">{{ row.seq|default_if_none:"—" }}</td>
+        <td class="cell-title{% if row.can_edit %} editable{% endif %}" data-field="title">{{ row.item.title }}</td>
+        <td class="cell-category{% if row.can_edit %} editable{% endif %}" data-field="category">{{ row.item.category.name }}</td>
+        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="actual_amount">{{ row.item.actual_amount }}</td>
+        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="invoice_amount">{% if row.item.invoice_amount %}{{ row.item.invoice_amount }}{% endif %}</td>
+        <td class="cell-payer{% if user.is_staff %} editable{% endif %}" data-field="payer">{{ row.item.payer_name }}</td>
+        <td class="cell-status{% if user.is_staff %} editable{% endif %}" data-field="status"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
+        <td class="attach-count"
+            title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}</td>
+        <td>{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr class="empty-row"><td colspan="{% if user.is_staff %}10{% else %}9{% endif %}">当前筛选下没有条目</td></tr>
       {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<aside id="panel" hidden></aside>
+<div id="panel-mask" hidden></div>
+<div id="toast" hidden></div>
+
+<template id="inline-selects">
+  <select data-field="category">
+    {% for c in categories %}<option value="{{ c.pk }}">{{ c.name }}</option>{% endfor %}
+  </select>
+  <select data-field="status">
+    {% for value, label in status_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+  </select>
+  <select data-field="payer">
+    {% for p in payers %}<option value="{{ p.pk }}">{{ p.get_full_name|default:p.username }}</option>{% endfor %}
+  </select>
+</template>
+
+<template id="card-template">
+  <div class="attach-card">
+    <div class="attach-preview"></div>
+    <div class="attach-body">
+      <div class="attach-name"></div>
+      <div class="attach-status">等待识别…</div>
+      <div class="attach-fields"></div>
+      <div class="attach-suggestions"></div>
+      <div class="timeline"></div>
+      <div class="attach-actions"><button type="button" class="secondary small attach-remove">移除</button></div>
     </div>
-  {% else %}
-    <div class="meta" style="color:#57606a;font-size:14px">暂无条目</div>
-  {% endif %}
-{% endfor %}
+  </div>
+</template>
 
 <script>
-  // 点条目卡弹详情浮层；卡内编辑/删除等链接不触发
-  document.querySelectorAll(".item.clickable").forEach(card => {
-    card.addEventListener("click", e => {
-      if (e.target.closest(".links")) return;
-      const dlg = document.getElementById("item-detail-" + card.dataset.detail);
-      dlg.querySelectorAll("iframe[data-src]").forEach(f => { f.src = f.dataset.src; });
-      dlg.showModal();
+(function () {
+  "use strict";
+  var csrfCookie = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+  var CSRF = csrfCookie ? csrfCookie[1] : "";
+  var PANEL = document.getElementById("panel");
+  var MASK = document.getElementById("panel-mask");
+  var TOAST = document.getElementById("toast");
+  var tbody = document.getElementById("board-tbody");
+  var table = document.getElementById("board-table");
+
+  function go(changes) {
+    var params = new URLSearchParams(location.search);
+    Object.keys(changes).forEach(function (key) {
+      var value = changes[key];
+      if (value === null || value === "") params.delete(key);
+      else params.set(key, value);
+    });
+    location.search = params.toString();
+  }
+
+  function postJSON(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json", "X-CSRFToken": CSRF, "X-Requested-With": "fetch"},
+      body: JSON.stringify(payload),
+    });
+  }
+
+  function toast(message) {
+    TOAST.textContent = message;
+    TOAST.hidden = false;
+    clearTimeout(TOAST._timer);
+    TOAST._timer = setTimeout(function () { TOAST.hidden = true; }, 3000);
+  }
+
+  /* ---------- 工具条与筛选 ---------- */
+  var batchSelect = document.getElementById("batch-select");
+  if (batchSelect) batchSelect.addEventListener("change", function () { go({batch: batchSelect.value}); });
+  var categorySelect = document.getElementById("category-select");
+  if (categorySelect) categorySelect.addEventListener("change", function () { go({category: categorySelect.value}); });
+  var payerSelect = document.getElementById("payer-select");
+  if (payerSelect) payerSelect.addEventListener("change", function () { go({payer: payerSelect.value}); });
+  var searchForm = document.getElementById("search-form");
+  if (searchForm) searchForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    go({q: document.getElementById("search-input").value.trim()});
+  });
+  var statusFilters = document.getElementById("status-filters");
+  if (statusFilters) {
+    var active = new URLSearchParams(location.search).get("status") || "";
+    statusFilters.querySelectorAll("a").forEach(function (link) {
+      if ((link.dataset.status || "") === active) link.classList.add("active");
+      link.href = "#" + (link.dataset.status || "");
+      link.addEventListener("click", function (e) {
+        e.preventDefault();
+        go({status: link.dataset.status});
+      });
+    });
+  }
+
+  /* ---------- 侧边栏开关 ---------- */
+  function closePanel() {
+    PANEL.hidden = true;
+    MASK.hidden = true;
+    PANEL.innerHTML = "";
+  }
+  function showError(message) {
+    var box = PANEL.querySelector("#panel-error");
+    if (box) {
+      box.textContent = message;
+      box.hidden = false;
+    } else {
+      toast(message);
+    }
+  }
+  function openPanel(url) {
+    fetch(url, {credentials: "same-origin"})
+      .then(function (resp) { return resp.ok ? resp.text() : Promise.reject(); })
+      .then(function (html) {
+        PANEL.innerHTML = html;
+        PANEL.hidden = false;
+        MASK.hidden = false;
+        PANEL.querySelectorAll("iframe[data-src]").forEach(function (frame) { frame.src = frame.dataset.src; });
+        PANEL.scrollTop = 0;
+        initPanel();
+      })
+      .catch(function () { toast("加载侧边栏失败"); });
+  }
+  MASK.addEventListener("click", closePanel);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !PANEL.hidden) closePanel();
+  });
+  var newBtn = document.getElementById("new-item-btn");
+  if (newBtn) newBtn.addEventListener("click", function () { openPanel("{% url 'item_create' %}"); });
+
+  /* ---------- 表格行交互：开侧边栏 / 删除 ---------- */
+  if (tbody) tbody.addEventListener("click", function (e) {
+    if (e.target.closest("td.editable, .row-del, .drag-handle, a, button, input, select")) return;
+    var tr = e.target.closest("tr[data-pk]");
+    if (tr) openPanel("/items/" + tr.dataset.pk + "/panel/");
+  });
+  if (tbody) tbody.addEventListener("click", function (e) {
+    var del = e.target.closest(".row-del");
+    if (!del) return;
+    var tr = del.closest("tr");
+    if (!confirm("确定删除这条报销条目？删除后无法恢复，仅可在操作留痕中追溯。")) return;
+    postJSON("/items/" + tr.dataset.pk + "/delete/", {})
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        if (data.ok) location.reload();
+        else toast(data.error || "删除失败");
+      })
+      .catch(function () { toast("网络错误"); });
+  });
+
+  /* ---------- 行内编辑 ---------- */
+  function inlineSelect(field) {
+    return document.getElementById("inline-selects").content.querySelector('select[data-field="' + field + '"]');
+  }
+  function optionText(field, value) {
+    var select = inlineSelect(field);
+    var option = select && select.querySelector('option[value="' + value + '"]');
+    return option ? option.textContent : value;
+  }
+  function renderCell(cell, tr, field, newValue) {
+    if (newValue === undefined) {  // 取消编辑：按行数据回填
+      if (field === "category") cell.textContent = optionText("category", tr.dataset.categoryId);
+      else if (field === "status") {
+        var status = tr.dataset.status;
+        cell.innerHTML = '<span class="badge ' + status + '">' + optionText("status", status) + "</span>";
+      } else if (field === "payer") cell.textContent = optionText("payer", tr.dataset.ownerId);
+      else cell.textContent = cell.dataset.original || "";
+      return;
+    }
+    if (field === "status") {
+      cell.innerHTML = '<span class="badge ' + newValue + '">' + optionText("status", newValue) + "</span>";
+      tr.dataset.status = newValue;
+    } else if (field === "payer") {
+      cell.textContent = optionText("payer", newValue);
+      tr.dataset.ownerId = newValue;
+    } else {
+      cell.textContent = newValue;
+    }
+  }
+  function startEdit(cell) {
+    var tr = cell.closest("tr");
+    var field = cell.dataset.field;
+    var editor;
+    if (field === "title") {
+      editor = document.createElement("input");
+      editor.type = "text";
+      editor.maxLength = 200;
+      editor.value = cell.textContent.trim();
+    } else if (field === "actual_amount" || field === "invoice_amount") {
+      editor = document.createElement("input");
+      editor.type = "number";
+      editor.step = "0.01";
+      editor.value = cell.textContent.trim();
+    } else {
+      editor = inlineSelect(field).cloneNode(true);
+      editor.value = field === "category" ? tr.dataset.categoryId
+        : field === "status" ? tr.dataset.status
+        : tr.dataset.ownerId;
+    }
+    editor.className = "inline-editor";
+    cell.textContent = "";
+    cell.appendChild(editor);
+    editor.focus();
+    if (editor.select) editor.select();
+
+    var done = false;
+    function restore() {
+      done = true;
+      renderCell(cell, tr, field);
+    }
+    function save() {
+      if (done) return;
+      done = true;
+      var value = editor.value;
+      postJSON("/items/" + tr.dataset.pk + "/field/", {field: field, value: value})
+        .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
+        .then(function (result) {
+          if (!result.ok || !result.data.ok) {
+            toast(result.data.error || "保存失败");
+            renderCell(cell, tr, field);
+            return;
+          }
+          if (field === "category") { location.reload(); return; }
+          renderCell(cell, tr, field, value);
+          if (result.data.warnings && result.data.warnings.length) {
+            toast(result.data.warnings.join("；"));
+          }
+        })
+        .catch(function () {
+          toast("网络错误");
+          renderCell(cell, tr, field);
+        });
+    }
+    editor.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); save(); }
+      if (e.key === "Escape") { e.preventDefault(); restore(); }
+    });
+    editor.addEventListener("blur", save);
+  }
+  if (tbody) tbody.addEventListener("click", function (e) {
+    var cell = e.target.closest("td.editable");
+    if (!cell || cell.querySelector(".inline-editor")) return;
+    var field = cell.dataset.field;
+    if (field === "title" || field === "actual_amount" || field === "invoice_amount") {
+      cell.dataset.original = cell.textContent.trim();
+    }
+    startEdit(cell);
+  });
+
+  /* ---------- 拖拽调序（staff，限类别内） ---------- */
+  var dragRow = null;
+  if (tbody) tbody.querySelectorAll(".drag-handle").forEach(function (handle) {
+    handle.draggable = true;
+    handle.addEventListener("dragstart", function (e) {
+      dragRow = handle.closest("tr");
+      dragRow.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", dragRow.dataset.pk);
+    });
+    handle.addEventListener("dragend", function () {
+      if (dragRow) dragRow.classList.remove("dragging");
+      dragRow = null;
     });
   });
-  // 点遮罩关闭（Esc 由 <dialog> 原生处理）
-  document.querySelectorAll("dialog.item-detail").forEach(dlg => {
-    dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+  if (tbody) tbody.addEventListener("dragover", function (e) {
+    if (!dragRow) return;
+    var row = e.target.closest("tr[data-pk]");
+    if (!row || row === dragRow || row.dataset.categoryId !== dragRow.dataset.categoryId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
   });
+  if (tbody) tbody.addEventListener("drop", function (e) {
+    if (!dragRow) return;
+    var row = e.target.closest("tr[data-pk]");
+    if (!row || row === dragRow || row.dataset.categoryId !== dragRow.dataset.categoryId) return;
+    e.preventDefault();
+    var categoryId = row.dataset.categoryId;
+    var rect = row.getBoundingClientRect();
+    var insertBefore = e.clientY < rect.top + rect.height / 2;
+    dragRow.remove();
+    tbody.insertBefore(dragRow, insertBefore ? row : row.nextSibling);
+    var order = Array.prototype.map.call(
+      tbody.querySelectorAll('tr[data-category-id="' + categoryId + '"][data-pk]'),
+      function (tr) { return Number(tr.dataset.pk); }
+    );
+    postJSON("/items/reorder/", {category: Number(categoryId), order: order})
+      .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
+      .then(function (result) {
+        if (result.ok && result.data.ok) location.reload();
+        else toast(result.data.error || "调序失败");
+      })
+      .catch(function () { toast("网络错误"); });
+  });
+
+  /* ---------- 客户端列排序（纯查看，不影响 position） ---------- */
+  if (table) {
+    /* 服务端渲染顺序即权威顺序（拖拽/改类别后 location.reload），还原时按此顺序回放 */
+    var canonicalRows = tbody ? Array.prototype.slice.call(tbody.querySelectorAll("tr[data-pk]")) : [];
+    table.querySelectorAll("th.sortable").forEach(function (th) {
+      th.addEventListener("click", function () {
+        var nextDir = th.dataset.dir === "asc" ? "desc" : (th.dataset.dir === "desc" ? "" : "asc");
+        table.querySelectorAll("th.sortable").forEach(function (other) { delete other.dataset.dir; });
+        if (nextDir) th.dataset.dir = nextDir;
+        var index = th.cellIndex;
+        var numeric = th.classList.contains("num");
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll("tr[data-pk]"));
+        if (nextDir === "") {
+          rows = canonicalRows.slice();
+        } else {
+          rows.sort(function (a, b) {
+            var cellA = a.cells[index] ? a.cells[index].textContent.trim() : "";
+            var cellB = b.cells[index] ? b.cells[index].textContent.trim() : "";
+            var result;
+            if (numeric) {
+              var numA = parseFloat(cellA);
+              var numB = parseFloat(cellB);
+              if (isNaN(numA) && isNaN(numB)) result = 0;
+              else if (isNaN(numA)) result = 1;  // 序号为 —（待审/退回）的行同 Excel 空值，升降序恒排最后
+              else if (isNaN(numB)) result = -1;
+              else result = nextDir === "asc" ? numA - numB : numB - numA;
+            } else {
+              result = cellA.localeCompare(cellB, "zh-Hans-CN");
+              if (nextDir === "desc") result = -result;
+            }
+            return result;
+          });
+        }
+        rows.forEach(function (row) { tbody.appendChild(row); });
+      });
+    });
+  }
+
+  /* ---------- 侧边栏内容：表单 fetch 提交、附件卡片、对账 ---------- */
+  var KINDS = {
+    invoice: {
+      prefix: "new_invoice", fields: [
+        {role: "amount", label: "发票金额", type: "number"},
+        {role: "invoice_no", label: "发票号码", type: "text"}
+      ],
+      suggestions: [{role: "amount", key: "invoice_amount"}, {role: "invoice_no", key: "invoice_no"}]
+    },
+    payment: {
+      prefix: "new_payment", fields: [
+        {role: "amount", label: "支付金额", type: "number"},
+        {role: "order_no", label: "平台单号", type: "text"},
+        {role: "merchant_no", label: "商户单号", type: "text"}
+      ],
+      suggestions: [{role: "amount", key: "amount"}, {role: "order_no", key: "order_no"}, {role: "merchant_no", key: "merchant_no"}]
+    },
+    refund: {
+      prefix: "new_refund", fields: [
+        {role: "amount", label: "退款金额", type: "number"},
+        {role: "order_no", label: "平台单号", type: "text"},
+        {role: "merchant_no", label: "商户单号", type: "text"}
+      ],
+      suggestions: [{role: "amount", key: "amount"}, {role: "order_no", key: "order_no"}, {role: "merchant_no", key: "merchant_no"}]
+    }
+  };
+  var ORDER_NO_RE = /^(20\d{26}|4\d{26})$/;
+  var TOLERANCE = 0.005;
+  var manualMatch = false;
+
+  function initPanel() {
+    var closeButton = PANEL.querySelector(".panel-close");
+    if (closeButton) closeButton.addEventListener("click", closePanel);
+    PANEL.querySelectorAll("form[action]").forEach(function (form) {
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        if (form.classList.contains("attach-delete-form") && !confirm("删除这个附件？")) return;
+        fetch(form.getAttribute("action"), {
+          method: "POST",
+          body: new FormData(form),
+          credentials: "same-origin",
+          headers: {"X-Requested-With": "fetch"}
+        })
+          .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
+          .then(function (result) {
+            if (result.ok && result.data.ok) {
+              closePanel();
+              location.reload();
+            } else {
+              showError(result.data.error || "保存失败");
+            }
+          })
+          .catch(function () { showError("网络错误"); });
+      });
+    });
+
+    var itemForm = PANEL.querySelector("#panel-form");
+    if (!itemForm) return;
+    manualMatch = false;
+    var csrfInput = itemForm.querySelector("[name=csrfmiddlewaretoken]");
+    var prefillUrl = "{% url 'item_prefill' %}";
+    var actualInput = document.getElementById("id_actual_amount");
+    var invoiceInput = document.getElementById("id_invoice_amount");
+    var reconcileBox = PANEL.querySelector("#panel-reconcile");
+    var summaryBox = PANEL.querySelector("#panel-ai-summary");
+    var hintBox = PANEL.querySelector("#panel-submit-hint");
+
+    [actualInput, invoiceInput].forEach(function (input) {
+      if (!input) return;
+      if (input.value) input.dataset.dirty = "1";
+      input.addEventListener("input", function () { input.dataset.dirty = "1"; render(); });
+    });
+
+    function cards(kind) {
+      var selector = kind ? '.attach-card[data-kind="' + kind + '"]' : ".attach-card";
+      return Array.prototype.slice.call(PANEL.querySelectorAll(selector));
+    }
+    function value(card, role) {
+      var input = card.querySelector('[data-role="' + role + '"]');
+      return input ? input.value.trim() : "";
+    }
+    function number(card, role) {
+      var raw = value(card, role);
+      if (!raw) return 0;
+      var parsed = parseFloat(raw);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    function total(list) {
+      return list.reduce(function (sum, card) { return sum + number(card, "amount"); }, 0);
+    }
+    function round2(n) { return Math.round(n * 100) / 100; }
+
+    function addStep(card, text) {
+      var line = document.createElement("div");
+      line.textContent = "· " + text;
+      card.querySelector(".timeline").appendChild(line);
+    }
+    function setStatus(card, text, state) {
+      var el = card.querySelector(".attach-status");
+      el.textContent = text;
+      el.className = "attach-status" + (state ? " " + state : "");
+    }
+    function setOcr(card, result) {
+      var ocr = card.querySelector('[data-role="ocr"]');
+      if (ocr) ocr.value = JSON.stringify(result);
+      if (result.remark_order_no) card.dataset.remark = result.remark_order_no;
+    }
+
+    function cardContainer(kind) { return PANEL.querySelector("#panel-cards-" + kind); }
+    function uploadInput(kind) { return PANEL.querySelector("#panel-upload-" + kind); }
+
+    function renumberCard(card, index) {
+      var prefix = KINDS[card.dataset.kind].prefix;
+      Array.prototype.forEach.call(card.querySelectorAll("[data-role]"), function (el) {
+        el.name = prefix + "_" + index + "_" + el.dataset.role;
+      });
+    }
+    function freshCards(kind) {
+      return cards(kind).filter(function (card) { return !!card._file; });
+    }
+    function syncFiles(kind) {
+      var input = uploadInput(kind);
+      if (!input) return;
+      var transfer = new DataTransfer();
+      freshCards(kind).forEach(function (card, index) {
+        transfer.items.add(card._file);
+        renumberCard(card, index);
+      });
+      input.files = transfer.files;
+    }
+
+    function confirmField(card, role) {
+      var input = card.querySelector('[data-role="' + role + '"]');
+      var suggest = card.querySelector('.suggest[data-role="' + role + '"]');
+      if (input && input.value.trim() && suggest) suggest.remove();
+    }
+
+    function suggest(card, role, raw, label) {
+      if (raw === null || raw === undefined) return;
+      var text = typeof raw === "number" ? raw.toFixed(2) : String(raw).trim();
+      if (!text || text === "0.00") return;
+      var input = card.querySelector('[data-role="' + role + '"]');
+      if (!input || input.value.trim()) return;
+      var box = card.querySelector(".attach-suggestions");
+      if (box.querySelector('[data-role="' + role + '"]')) return;
+      var line = document.createElement("div");
+      line.className = "suggest";
+      line.dataset.role = role;
+      var caption = document.createElement("span");
+      caption.textContent = "AI 建议 " + (label ? label + "：" : "") + text;
+      var use = document.createElement("button");
+      use.type = "button";
+      use.textContent = "采用";
+      use.addEventListener("click", function () {
+        input.value = text;
+        line.remove();
+        render();
+      });
+      line.appendChild(caption);
+      line.appendChild(use);
+      box.appendChild(line);
+    }
+
+    function addCard(kind, file) {
+      var card = document.getElementById("card-template").content.firstElementChild.cloneNode(true);
+      card.dataset.kind = kind;
+      card._file = file;
+      card.querySelector(".attach-name").textContent = file.name;
+      var preview = card.querySelector(".attach-preview");
+      var url = URL.createObjectURL(file);
+      card._url = url;
+      if (/\.pdf$/i.test(file.name)) {
+        var frame = document.createElement("iframe");
+        frame.src = url;
+        preview.appendChild(frame);
+      } else {
+        var img = document.createElement("img");
+        img.src = url;
+        preview.appendChild(img);
+      }
+      var fields = card.querySelector(".attach-fields");
+      KINDS[kind].fields.forEach(function (field) {
+        var label = document.createElement("label");
+        label.className = "attach-field";
+        label.textContent = field.label;
+        var input = document.createElement("input");
+        input.type = field.type;
+        if (field.type === "number") input.step = "0.01";
+        input.dataset.role = field.role;
+        input.addEventListener("input", function () {
+          confirmField(card, field.role);
+          render();
+        });
+        label.appendChild(input);
+        fields.appendChild(label);
+      });
+      var ocr = document.createElement("input");
+      ocr.type = "hidden";
+      ocr.dataset.role = "ocr";
+      fields.appendChild(ocr);
+      card.querySelector(".attach-remove").addEventListener("click", function () {
+        if (card._url) URL.revokeObjectURL(card._url);
+        card.remove();
+        syncFiles(kind);
+        render();
+      });
+      setStatus(card, "识别中…");
+      addStep(card, "已选择文件 " + file.name);
+      cardContainer(kind).appendChild(card);
+      return card;
+    }
+
+    function recognize(card, file, kind) {
+      var data = new FormData();
+      data.append("file", file);
+      data.append("kind", kind);
+      fetch(prefillUrl, {
+        method: "POST",
+        body: data,
+        credentials: "same-origin",
+        headers: {"X-CSRFToken": csrfInput.value}
+      })
+        .then(function (resp) { return resp.ok ? resp.json() : {}; })
+        .then(function (result) { applyResult(card, kind, result || {}); })
+        .catch(function () {
+          setStatus(card, "未识别，请手动填写", "warn");
+          addStep(card, "识别请求失败");
+          render();
+        });
+    }
+
+    function applyResult(card, kind, result) {
+      setOcr(card, result);
+      if (!result || !result._source) {
+        setStatus(card, "未识别，请手动填写", "warn");
+        addStep(card, "未识别到可回填字段");
+        render();
+        return;
+      }
+      var isPdf = /\.pdf$/i.test(card._file.name);
+      var fromText = isPdf && result._source === "text";
+      setStatus(card, "已识别（来源：" + (fromText ? "文本" : "图像") + "）", "ok");
+      if (fromText) {
+        addStep(card, "PDF 提文本成功");
+      } else if (isPdf) {
+        addStep(card, "PDF 无文本，已转图像识别");
+      } else {
+        addStep(card, "图像识别");
+      }
+      var filled = 0;
+      KINDS[kind].suggestions.forEach(function (item) {
+        var raw = result[item.key];
+        var text = raw === null || raw === undefined ? "" : String(raw).trim();
+        if (!text) return;
+        filled++;
+        suggest(card, item.role, text);
+      });
+      addStep(card, "识别完成，回填建议 " + filled + " 项");
+      render();
+    }
+
+    PANEL.querySelectorAll("input[type=file][data-kind]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        var kind = input.dataset.kind;
+        Array.prototype.forEach.call(input.files, function (file) {
+          var card = addCard(kind, file);
+          recognize(card, file, kind);
+        });
+        syncFiles(kind);
+        render();
+      });
+    });
+
+    function compute() {
+      var invoiceCards = cards("invoice");
+      var paymentCards = cards("payment");
+      var refundCards = cards("refund");
+      var invoiceTotal = round2(total(invoiceCards));
+      var paymentTotal = round2(total(paymentCards));
+      var refundTotal = round2(total(refundCards));
+      var net = round2(paymentTotal - refundTotal);
+
+      var badNo = [];
+      paymentCards.concat(refundCards).forEach(function (card) {
+        var no = value(card, "order_no");
+        if (no && !ORDER_NO_RE.test(no)) badNo.push(no);
+      });
+
+      var payable = [];
+      paymentCards.forEach(function (card) {
+        [value(card, "order_no"), value(card, "merchant_no")].forEach(function (key) {
+          if (key) payable.push(key);
+        });
+      });
+      var matched = false;
+      var remarks = 0;
+      invoiceCards.forEach(function (card) {
+        var remark = (card.dataset.remark || "").trim();
+        if (!remark) return;
+        remarks++;
+        if (payable.indexOf(remark) >= 0) matched = true;
+      });
+
+      var actualValue = actualInput && actualInput.value.trim() ? parseFloat(actualInput.value) : null;
+      var invoiceValue = invoiceInput && invoiceInput.value.trim() ? parseFloat(invoiceInput.value) : null;
+      var amountOk = true;
+      if (actualValue !== null && (paymentCards.length || refundCards.length)
+          && Math.abs(net - actualValue) > TOLERANCE) amountOk = false;
+      if (invoiceValue !== null && invoiceCards.length
+          && Math.abs(invoiceTotal - invoiceValue) > TOLERANCE) amountOk = false;
+
+      return {
+        invoiceCards: invoiceCards, paymentCards: paymentCards, refundCards: refundCards,
+        invoiceTotal: invoiceTotal, paymentTotal: paymentTotal, refundTotal: refundTotal,
+        net: net, badNo: badNo, matched: matched, remarks: remarks, amountOk: amountOk
+      };
+    }
+
+    function autofillTotals(state) {
+      if (actualInput && !actualInput.dataset.dirty && (state.paymentCards.length || state.refundCards.length)) {
+        actualInput.value = state.net.toFixed(2);
+      }
+      if (invoiceInput && !invoiceInput.dataset.dirty && state.invoiceCards.length) {
+        invoiceInput.value = state.invoiceTotal.toFixed(2);
+      }
+    }
+
+    function refreshSummary(state) {
+      var all = freshCards();
+      var recognized = all.filter(function (card) {
+        return card.querySelector(".attach-status.ok");
+      }).length;
+      var pending = PANEL.querySelectorAll(".attach-suggestions .suggest").length;
+      var unfilled = all.filter(function (card) { return value(card, "amount") === ""; }).length;
+      var passed = pending === 0 && unfilled === 0 && state.badNo.length === 0 && state.amountOk
+        && (state.matched || manualMatch || state.paymentCards.length === 0 || state.remarks === 0);
+
+      var text;
+      if (!all.length) {
+        text = "尚未上传附件";
+      } else {
+        text = "已识别 " + recognized + "/" + all.length + " 张 · 待确认建议 " + pending + " 条";
+        if (unfilled) text += " · 未填金额 " + unfilled + " 张";
+        if (state.badNo.length) text += " · 平台单号格式有误";
+        else if (state.matched) text += " · 单号已互配";
+        else if (state.remarks) text += " · 单号未互配";
+        if (!state.amountOk) text += " · 金额合计与填写不一致";
+        text += passed ? " · AI 已核对完毕" : " · 待人工核对";
+      }
+      summaryBox.textContent = text;
+      summaryBox.className = "ai-summary" + (all.length === 0 ? "" : (passed ? " ok" : " warn"));
+
+      if (all.length && !passed) {
+        hintBox.hidden = false;
+        hintBox.textContent = "有事项待核对（不阻断提交）";
+      } else {
+        hintBox.hidden = true;
+      }
+    }
+
+    function render() {
+      if (!PANEL.querySelector("#panel-reconcile")) return;
+      var state = compute();
+      autofillTotals(state);
+      state = compute();  // 回填后重算，避免拿陈旧输入值判不一致
+      var parts = [];
+      parts.push('<div class="line">发票 <b>' + state.invoiceCards.length + '</b> 张，合计 <b>¥'
+        + state.invoiceTotal.toFixed(2) + '</b>；支付 <b>' + state.paymentCards.length + '</b> 笔，合计 <b>¥'
+        + state.paymentTotal.toFixed(2) + '</b>；退款 <b>¥' + state.refundTotal.toFixed(2)
+        + '</b>；净额 <b>¥' + state.net.toFixed(2) + '</b></div>');
+      if (state.badNo.length) {
+        parts.push('<div class="line warn">平台单号格式有误：' + state.badNo.join("、")
+          + "（平台单号应为 28 位：支付宝订单号 20 开头 / 微信交易单号 4 开头）</div>");
+      } else if (state.matched) {
+        parts.push('<div class="line ok">单号已互配</div>');
+      } else if (state.remarks) {
+        parts.push('<div class="line muted">未见互配单号（可能截图无单号，请人工确认）</div>');
+      } else {
+        parts.push('<div class="line muted">无发票备注单号可比对</div>');
+      }
+      if (!state.amountOk) {
+        parts.push('<div class="line warn">附件金额合计与填写的发票金额/实付款不一致，请核对</div>');
+      }
+      if (state.remarks && !state.matched) {
+        parts.push('<label class="line"><input type="checkbox" id="panel-manual-match"'
+          + (manualMatch ? " checked" : "") + "> 我已人工核对单号</label>");
+      }
+      reconcileBox.innerHTML = parts.join("");
+      var box = PANEL.querySelector("#panel-manual-match");
+      if (box) {
+        box.addEventListener("change", function () {
+          manualMatch = box.checked;
+          render();
+        });
+      }
+      refreshSummary(state);
+    }
+
+    render();
+  }
+})();
 </script>
 {% endblock %}

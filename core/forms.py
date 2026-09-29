@@ -1,12 +1,15 @@
 from django import forms
+from django.contrib.auth.models import User
 
 from .models import Attachment, Category, Item
 
 
-class ItemForm(forms.ModelForm):
+class ItemPanelForm(forms.ModelForm):
+    """侧边栏新建/编辑表单；非 staff 剔除审核状态与付款人字段。"""
+
     class Meta:
         model = Item
-        fields = ["title", "category", "actual_amount", "invoice_amount"]
+        fields = ["title", "category", "actual_amount", "invoice_amount", "status", "owner"]
         widgets = {
             "title": forms.TextInput(attrs={"class": "form-control"}),
             "actual_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
@@ -19,7 +22,7 @@ class ItemForm(forms.ModelForm):
             "invoice_amount": "发票票面价税合计；多张发票会自动加总，也可手动修改",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, staff=False, **kwargs):
         super().__init__(*args, **kwargs)
         notes = [
             f"{c.name}：{c.description}"
@@ -27,6 +30,13 @@ class ItemForm(forms.ModelForm):
             if c.description
         ]
         self.fields["category"].help_text = "；".join(notes)
+        self.fields["owner"] = forms.ModelChoiceField(
+            queryset=User.objects.filter(is_active=True),
+            label="付款人",
+        )
+        if not staff:
+            del self.fields["status"]
+            del self.fields["owner"]
 
 
 class AttachmentForm(forms.ModelForm):

@@ -1,23 +1,27 @@
 import base64
 import json
+import re
 import shutil
 import tempfile
 import zipfile
 from decimal import Decimal
-from io import BytesIO
+from io import BytesIO, StringIO
+from email.header import decode_header
+from pathlib import Path
 from unittest import mock
 
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.contrib.messages.storage.cookie import CookieStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from openpyxl import load_workbook
 
 from . import pairing, vision
 from .audit import ActorMiddleware
-from .models import Attachment, AuditLog, Category, Item
+from .models import Attachment, AuditLog, Batch, Category, Item
 from .validation import check_item
 
 PNG_1X1 = base64.b64decode(
@@ -31,6 +35,14 @@ ALIPAY_ORDER_NO = "20" + "1" * 26  # 28 位，20 开头
 
 def _png_upload(name):
     return SimpleUploadedFile(name, PNG_1X1, content_type="image/png")
+
+
+def _content_disposition(response):
+    """Django 把非 ASCII 响应头按 RFC 2047 编码，测试断言前先解码。"""
+    return "".join(
+        part.decode(charset or "utf-8")
+        for part, charset in decode_header(response["Content-Disposition"])
+    )
 
 
 def _item_data(**overrides):
@@ -57,6 +69,7 @@ class SubmissionTestCase(TestCase):
         self.category, _ = Category.objects.get_or_create(
             name="信息服务费", defaults={"order": 0}
         )
+        self.batch = Batch.objects.create(name="2025 报销批次")
         self.student = User.objects.create_user(
             "zhangsan22", password="pw", first_name="张三"
         )
@@ -70,7 +83,11 @@ class SubmissionTestCase(TestCase):
 
     def _create_item(self, user, **overrides):
         self.client.force_login(user)
-        data = _item_data(category=self.category.pk, **overrides)
+        overrides.setdefault("category", self.category.pk)
+        data = _item_data(**overrides)
+        if user.is_staff:
+            data["owner"] = user.pk   # staff 表单含付款人字段，需显式提供
+            data["status"] = Item.STATUS_PENDING  # staff 表单含状态字段，需显式提供
         response = self.client.post("/items/new/", data)
         self.assertRedirects(response, "/")
         return Item.objects.latest("id")
@@ -133,7 +150,8 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         data["new_refund_0_amount"] = "20.00"
         response = self.client.post("/items/new/", data, follow=True)
         self.assertRedirects(response, "/")
-        self.assertNotContains(response, "不一致")
+        self.assertNotContains(response, "支付与退款附件合计与填写的实付款不一致")
+        self.assertNotContains(response, "发票附件金额合计与填写的发票金额不一致")
 
     def test_non_dict_ocr_is_dropped(self):
         self.client.force_login(self.student)
@@ -174,7 +192,7 @@ class AttachmentSubmissionTests(SubmissionTestCase):
             {"kind": Attachment.KIND_PAYMENT, "amount": "55.50",
              "order_no": ALIPAY_ORDER_NO, "merchant_no": "", "invoice_no": ""},
         )
-        self.assertRedirects(response, f"/items/{item.pk}/edit/")
+        self.assertRedirects(response, "/")
         attachment.refresh_from_db()
         self.assertEqual(str(attachment.amount), "55.50")
 
@@ -183,7 +201,7 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         attachment = item.attachments.get(kind=Attachment.KIND_INVOICE)
         self.client.force_login(self.student)
         response = self.client.post(f"/items/attachments/{attachment.pk}/delete/")
-        self.assertRedirects(response, f"/items/{item.pk}/edit/")
+        self.assertRedirects(response, "/")
         self.assertFalse(Attachment.objects.filter(pk=attachment.pk).exists())
         self.assertTrue(item.attachments.filter(kind=Attachment.KIND_PAYMENT).exists())
 
@@ -222,7 +240,7 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         item.status = Item.STATUS_APPROVED
         item.save()
         self.client.force_login(self.staff)
-        response = self.client.get("/export/excel/")
+        response = self.client.get("/export/excel/", {"batch": self.batch.pk})
         sheet = load_workbook(BytesIO(response.content)).active
         self.assertEqual(
             [cell.value for cell in sheet[1]],
@@ -236,7 +254,7 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         item.status = Item.STATUS_APPROVED
         item.save()
         self.client.force_login(self.staff)
-        response = self.client.get("/export/zip/")
+        response = self.client.get("/export/zip/", {"batch": self.batch.pk})
         names = zipfile.ZipFile(BytesIO(response.content)).namelist()
         self.assertEqual(len(names), 2)
         self.assertTrue(any("_发票_1." in name for name in names))
@@ -251,6 +269,7 @@ class CheckItemTests(SubmissionTestCase):
             "owner": self.student,
             "title": "书",
             "category": self.category,
+            "batch": self.batch,
             "actual_amount": "100.00",
             "invoice_amount": "100.00",
         }
@@ -383,6 +402,15 @@ class AuditLogTests(SubmissionTestCase):
         self.assertEqual(log.snapshot["status"], "pending")
         self.assertEqual(len(log.snapshot["attachments"]), 2)
 
+    def test_staff_can_delete_any_item(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.staff)
+        response = self.client.post(f"/items/{item.pk}/delete/")
+        self.assertRedirects(response, "/")
+        self.assertFalse(Item.objects.filter(pk=item.pk).exists())
+        log = AuditLog.objects.filter(action="delete").latest("id")
+        self.assertEqual(log.actor, self.staff)
+
     def test_delete_other_users_item_forbidden(self):
         item = self._create_item(self.student)
         self.client.force_login(self.student_b)
@@ -400,7 +428,7 @@ class AuditLogTests(SubmissionTestCase):
     def test_admin_bulk_action_logs_per_item(self):
         item1 = self._create_item(self.student)
         item2 = Item.objects.create(
-            owner=self.student, title="书", category=self.category,
+            owner=self.student, title="书", category=self.category, batch=self.batch,
             actual_amount="50.00",
         )
         ma = admin.site._registry[Item]
@@ -418,12 +446,11 @@ class AuditLogTests(SubmissionTestCase):
 
     def test_shell_path_has_no_actor(self):
         item = Item.objects.create(
-            owner=self.student, title="无请求", category=self.category,
+            owner=self.student, title="无请求", category=self.category, batch=self.batch,
             actual_amount="10.00",
         )
         log = AuditLog.objects.get(action="create", item_pk=item.pk)
         self.assertIsNone(log.actor)
-        self.assertEqual(log.actor_name, "")
         self.assertEqual(log.snapshot["attachments"], [])
 
     def test_update_page_shows_audit_section(self):
@@ -435,49 +462,60 @@ class AuditLogTests(SubmissionTestCase):
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class ItemDetailTests(SubmissionTestCase):
-    """看板条目详情模态浮层（issue #13）：所有登录用户可见，编辑入口限本人/管理员。"""
+    """条目侧边栏片段：所有登录用户可见，编辑控件限本人/管理员。"""
 
-    def test_board_renders_detail_dialog_with_images(self):
+    def test_panel_renders_images_and_groups(self):
         item = self._create_item(self.student)
         invoice = item.attachments.get(kind=Attachment.KIND_INVOICE)
         payment = item.attachments.get(kind=Attachment.KIND_PAYMENT)
         self.client.force_login(self.student)
-        response = self.client.get("/")
-        self.assertContains(response, f'id="item-detail-{item.pk}"')
+        response = self.client.get(f"/items/{item.pk}/panel/")
         self.assertContains(response, f'src="/items/attachments/{invoice.pk}/file/"')
         self.assertContains(response, f'src="/items/attachments/{payment.pk}/file/"')
-        self.assertContains(response, "<h3>发票</h3>")
-        self.assertContains(response, "<h3>支付记录</h3>")
-        self.assertNotContains(response, "<h3>退款记录</h3>")
+        self.assertContains(response, "发票</h4>")
+        self.assertContains(response, "支付记录</h4>")
+        self.assertNotContains(response, "退款记录</h4>")
 
-    def test_board_shows_refund_group_when_present(self):
-        self._create_item(self.student, refunds=[_png_upload("r.png")])
+    def test_panel_shows_refund_group_when_present(self):
+        item = self._create_item(self.student, refunds=[_png_upload("r.png")])
         self.client.force_login(self.student)
-        self.assertContains(self.client.get("/"), "<h3>退款记录</h3>")
+        self.assertContains(self.client.get(f"/items/{item.pk}/panel/"), "退款记录</h4>")
 
-    def test_pdf_attachment_uses_lazy_iframe(self):
+    def test_panel_pdf_attachment_uses_lazy_iframe(self):
         item = self._create_item(self.student, invoices=[_png_upload("a.pdf")])
         pdf = item.attachments.get(kind=Attachment.KIND_INVOICE)
         self.client.force_login(self.student)
-        response = self.client.get("/")
+        response = self.client.get(f"/items/{item.pk}/panel/")
         self.assertContains(response, f'data-src="/items/attachments/{pdf.pk}/file/"')
         self.assertNotContains(response, f'<iframe src="/items/attachments/{pdf.pk}/file/"')
 
-    def test_other_user_sees_images_without_edit_entry(self):
+    def test_other_user_sees_readonly_panel(self):
         item = self._create_item(self.student)
         invoice = item.attachments.get(kind=Attachment.KIND_INVOICE)
         self.client.force_login(self.student_b)
-        response = self.client.get("/")
+        response = self.client.get(f"/items/{item.pk}/panel/")
         self.assertContains(response, f'src="/items/attachments/{invoice.pk}/file/"')
-        self.assertNotContains(response, f"/items/{item.pk}/edit/")
+        self.assertContains(response, "操作记录")
+        self.assertNotContains(response, 'id="panel-form"')
+        self.assertNotContains(response, 'name="status"')
 
-    def test_owner_and_staff_see_edit_entry(self):
+    def test_owner_and_staff_get_editable_panel(self):
         item = self._create_item(self.student)
-        edit_url = f"/items/{item.pk}/edit/"
+        panel_url = f"/items/{item.pk}/panel/"
         self.client.force_login(self.student)
-        self.assertContains(self.client.get("/"), edit_url)
+        response = self.client.get(panel_url)
+        self.assertContains(response, 'id="panel-form"')
+        self.assertNotContains(response, 'name="status"')
+        self.assertNotContains(response, 'name="owner"')
         self.client.force_login(self.staff)
-        self.assertContains(self.client.get("/"), edit_url)
+        response = self.client.get(panel_url)
+        self.assertContains(response, 'name="status"')
+        self.assertContains(response, 'name="owner"')
+
+    def test_panel_requires_login(self):
+        item = self._create_item(self.student)
+        self.client.logout()
+        self.assertEqual(self.client.get(f"/items/{item.pk}/panel/").status_code, 302)
 
     def test_board_requires_login(self):
         self.client.logout()
@@ -800,3 +838,351 @@ class BatchPairViewTests(SubmissionTestCase):
     def test_requires_login(self):
         response = self.client.post("/items/batch/pair/", "{}", content_type="application/json")
         self.assertEqual(response.status_code, 302)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class BoardTableTests(SubmissionTestCase):
+    def test_defaults_to_latest_batch_with_seq(self):
+        older = Batch.objects.create(name="旧批次")
+        Batch.objects.create(name="新批次")
+        Item.objects.create(owner=self.student, title="旧条目", category=self.category,
+                            batch=older, actual_amount="1.00", position=1)
+        item = self._create_item(self.student)  # 归最新批（新批次）
+        item.status = Item.STATUS_APPROVED
+        item.save()
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertContains(response, item.title)
+        self.assertNotContains(response, "旧条目")
+        self.assertContains(response, '<td class="num seq">1</td>')
+
+    def test_seq_matches_export_approved_only(self):
+        """混合状态批次：approved 占连续序号且与导出一致，待审/退回不占号。"""
+        approved = self._create_item(self.student, title="已通过")
+        approved.status = Item.STATUS_APPROVED
+        approved.save()
+        self._create_item(self.student, title="待审核")
+        rejected = self._create_item(self.student, title="已退回")
+        rejected.status = Item.STATUS_REJECTED
+        rejected.save()
+        self.client.force_login(self.staff)
+        response = self.client.get("/")
+        self.assertContains(response, '<td class="num seq">1</td>')
+        self.assertContains(response, '<td class="num seq">—</td>')
+        self.assertNotContains(response, '<td class="num seq">2</td>')
+        # 同一批次导出：序号连续、只含 approved，与表格序号严格一致
+        sheet = load_workbook(BytesIO(self.client.get(
+            "/export/excel/", {"batch": approved.batch.pk}).content)).active
+        self.assertEqual(sheet.cell(row=2, column=1).value, 1)
+        self.assertEqual(sheet.cell(row=2, column=2).value, "已通过")
+        self.assertNotIn("待审核", [cell.value for row in sheet.iter_rows() for cell in row])
+
+    def test_batch_switch_and_filters(self):
+        other_category = Category.objects.create(name="其他类别", order=5)
+        item_a = self._create_item(self.student, title="硬盘")
+        item_b = self._create_item(self.staff, title="会议费", category=other_category.pk)
+        item_b.status = Item.STATUS_APPROVED
+        item_b.save()
+        self.client.force_login(self.student)
+        self.assertContains(self.client.get("/"), "硬盘")
+        self.assertContains(self.client.get("/"), "会议费")
+        response = self.client.get("/", {"status": "approved"})
+        self.assertNotContains(response, "硬盘")
+        self.assertContains(response, "会议费")
+        response = self.client.get("/", {"category": other_category.pk})
+        self.assertNotContains(response, "硬盘")
+        response = self.client.get("/", {"payer": self.staff.pk})
+        self.assertNotContains(response, "硬盘")
+        response = self.client.get("/", {"q": "硬盘"})
+        self.assertNotContains(response, "会议费")
+
+    def test_staff_sees_admin_controls_student_does_not(self):
+        self._create_item(self.student)
+        self.client.force_login(self.staff)
+        response = self.client.get("/")
+        self.assertContains(response, "新建批次")
+        self.assertContains(response, "导出 Excel")
+        self.assertContains(response, "导出 zip")
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertNotContains(response, "新建批次")
+        self.assertNotContains(response, "导出 Excel")
+
+    def test_no_batches_empty_state(self):
+        Batch.objects.all().delete()
+        self.client.force_login(self.staff)
+        self.assertContains(self.client.get("/"), "创建批次")
+        self.client.force_login(self.student)
+        self.assertContains(self.client.get("/"), "请联@管理员创建批次")
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ItemFieldUpdateTests(SubmissionTestCase):
+    def _post_field(self, item, field, value, as_user=None):
+        self.client.force_login(as_user or self.student)
+        return self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": field, "value": value}),
+            content_type="application/json",
+        )
+
+    def test_owner_updates_title(self):
+        item = self._create_item(self.student)
+        response = self._post_field(item, "title", "新明细")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        item.refresh_from_db()
+        self.assertEqual(item.title, "新明细")
+
+    def test_other_student_forbidden(self):
+        item = self._create_item(self.student)
+        self.assertEqual(self._post_field(item, "title", "x", as_user=self.student_b).status_code, 403)
+
+    def test_student_cannot_change_status_or_owner(self):
+        item = self._create_item(self.student)
+        self.assertEqual(self._post_field(item, "status", "approved").status_code, 403)
+        self.assertEqual(self._post_field(item, "owner", self.student_b.pk).status_code, 403)
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_PENDING)
+        self.assertEqual(item.owner, self.student)
+
+    def test_staff_changes_status_and_owner_with_audit(self):
+        item = self._create_item(self.student)
+        response = self._post_field(item, "status", "approved", as_user=self.staff)
+        self.assertEqual(response.status_code, 200)
+        response = self._post_field(item, "owner", self.student_b.pk, as_user=self.staff)
+        self.assertEqual(response.status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_APPROVED)
+        self.assertEqual(item.owner, self.student_b)
+        log = AuditLog.objects.filter(action="update").latest("id")
+        self.assertEqual(log.snapshot, {"owner": ["张三", "李四"]})
+
+    def test_category_change_appends_to_end(self):
+        other_category = Category.objects.create(name="其他类别", order=5)
+        first = self._create_item(self.student)   # position 1
+        second = self._create_item(self.student)  # position 2
+        response = self._post_field(first, "category", other_category.pk)
+        self.assertEqual(response.status_code, 200)
+        first.refresh_from_db()
+        self.assertEqual(first.category_id, other_category.pk)
+        self.assertEqual(first.position, 3)  # next_position()：落到目标类别末尾
+
+    def test_invalid_amount_rejected(self):
+        item = self._create_item(self.student)
+        for bad in ("abc", "1.005", "100000000"):
+            with self.subTest(amount=bad):
+                response = self._post_field(item, "actual_amount", bad)
+                self.assertEqual(response.status_code, 400)
+        item.refresh_from_db()
+        self.assertEqual(str(item.actual_amount), "100.00")
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ItemReorderTests(SubmissionTestCase):
+    def _reorder(self, order, category, as_user=None):
+        self.client.force_login(as_user or self.staff)
+        return self.client.post(
+            "/items/reorder/",
+            json.dumps({"category": category.pk, "order": order}),
+            content_type="application/json",
+        )
+
+    def test_staff_reorder_updates_positions_and_seq(self):
+        item_a = self._create_item(self.student)   # position 1
+        item_b = self._create_item(self.student)   # position 2
+        item_c = self._create_item(self.staff)     # position 3
+        response = self._reorder([item_c.pk, item_a.pk, item_b.pk], self.category)
+        self.assertEqual(response.status_code, 200)
+        for item, position in ((item_c, 4), (item_a, 5), (item_b, 6)):
+            item.refresh_from_db()
+            self.assertEqual(item.position, position)
+        self.client.force_login(self.staff)
+        content = self.client.get("/").content.decode()
+        pks = re.findall(r'data-pk="(\d+)"', content)
+        self.assertEqual(pks, [str(item_c.pk), str(item_a.pk), str(item_b.pk)])
+
+    def test_student_forbidden(self):
+        item = self._create_item(self.student)
+        self.assertEqual(self._reorder([item.pk], self.category, as_user=self.student_b).status_code, 403)
+
+    def test_order_must_cover_exactly(self):
+        item_a = self._create_item(self.student)
+        item_b = self._create_item(self.student)
+        other_category = Category.objects.create(name="其他类别", order=5)
+        other = Item.objects.create(owner=self.student, title="他类", category=other_category,
+                                    batch=self.batch, actual_amount="1.00", position=10)
+        self.assertEqual(self._reorder([item_a.pk], self.category).status_code, 400)  # 缺行
+        self.assertEqual(self._reorder([item_a.pk, item_b.pk, other.pk], self.category).status_code, 400)  # 跨类别
+        self.assertEqual(self._reorder([item_a.pk, item_b.pk, item_b.pk], self.category).status_code, 400)  # 重复
+        self.assertEqual(self._reorder([item_a.pk, 999999], self.category).status_code, 400)  # 不存在
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ExportBatchTests(SubmissionTestCase):
+    def _approve(self, item):
+        item.status = Item.STATUS_APPROVED
+        item.save(update_fields=["status"])
+        return item
+
+    def test_batches_isolated_with_batch_filename(self):
+        item = self._approve(self._create_item(self.student))
+        other_batch = Batch.objects.create(name="第二批")
+        self._approve(Item.objects.create(
+            owner=self.student, title="他批条目", category=self.category,
+            batch=other_batch, actual_amount="9.00", position=99,
+        ))
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/excel/", {"batch": self.batch.pk})
+        self.assertIn("报销汇总_2025 报销批次.xlsx", _content_disposition(response))
+        sheet = load_workbook(BytesIO(response.content)).active
+        titles = [sheet.cell(row=r, column=2).value for r in range(2, sheet.max_row + 1)]
+        self.assertIn("硬盘", titles)
+        self.assertNotIn("他批条目", titles)
+        # 缺省 batch 取最新批（第二批创建最晚）
+        response = self.client.get("/export/excel/")
+        sheet = load_workbook(BytesIO(response.content)).active
+        titles = [sheet.cell(row=r, column=2).value for r in range(2, sheet.max_row + 1)]
+        self.assertIn("他批条目", titles)
+        self.assertNotIn("硬盘", titles)
+
+    def test_zip_filename_contains_batch_name(self):
+        Item.objects.create(owner=self.student, title="后提交排前", category=self.category,
+                            batch=self.batch, actual_amount="2.00", position=1,
+                            status=Item.STATUS_APPROVED)
+        Item.objects.create(owner=self.student, title="先提交排后", category=self.category,
+                            batch=self.batch, actual_amount="1.00", position=2,
+                            status=Item.STATUS_APPROVED)
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/zip/", {"batch": self.batch.pk})
+        self.assertIn("报销材料_2025 报销批次.zip", _content_disposition(response))
+
+    def test_excel_seq_follows_position(self):
+        Item.objects.create(owner=self.student, title="后提交排前", category=self.category,
+                            batch=self.batch, actual_amount="2.00", position=1,
+                            status=Item.STATUS_APPROVED)
+        Item.objects.create(owner=self.student, title="先提交排后", category=self.category,
+                            batch=self.batch, actual_amount="1.00", position=2,
+                            status=Item.STATUS_APPROVED)
+        self.client.force_login(self.staff)
+        sheet = load_workbook(BytesIO(self.client.get(
+            "/export/excel/", {"batch": self.batch.pk}).content)).active
+        self.assertEqual(sheet.cell(row=2, column=1).value, 1)
+        self.assertEqual(sheet.cell(row=2, column=2).value, "后提交排前")
+        self.assertEqual(sheet.cell(row=3, column=1).value, 2)
+        self.assertEqual(sheet.cell(row=3, column=2).value, "先提交排后")
+
+    def test_export_without_batches_yields_empty_files(self):
+        Batch.objects.all().delete()
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/excel/")
+        self.assertEqual(response.status_code, 200)
+        sheet = load_workbook(BytesIO(response.content)).active
+        self.assertEqual(sheet.max_row, 1)  # 仅表头
+        response = self.client.get("/export/zip/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(zipfile.ZipFile(BytesIO(response.content)).namelist()), 0)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class BatchAddTests(SubmissionTestCase):
+    def test_staff_creates_batch(self):
+        self.client.force_login(self.staff)
+        response = self.client.post("/batches/add/", {"name": "20261008 报销"})
+        self.assertRedirects(response, "/")
+        self.assertTrue(Batch.objects.filter(name="20261008 报销").exists())
+
+    def test_student_forbidden(self):
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.post("/batches/add/", {"name": "x"}).status_code, 403)
+        self.assertFalse(Batch.objects.filter(name="x").exists())
+
+    def test_duplicate_name_rejected(self):
+        self.client.force_login(self.staff)
+        response = self.client.post("/batches/add/", {"name": self.batch.name}, follow=True)
+        self.assertContains(response, "已存在")
+        self.assertEqual(Batch.objects.filter(name=self.batch.name).count(), 1)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT, DEEPSEEK_API_KEY="test-key")
+class ImportBatchCommandTests(SubmissionTestCase):
+    def call(self, directory, *args):
+        out = StringIO()
+        call_command("import_batch", str(directory), *args, stdout=out)
+        return out.getvalue()
+
+    def _write(self, tmp, person, files):
+        directory = Path(tmp) / person if person else Path(tmp)
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for name in files:
+            path = directory / name
+            path.write_bytes(PNG_1X1)
+            paths.append(path)
+        return paths
+
+    def test_person_dir_creates_pending_item(self):
+        User.objects.create_user("root", password="pw", is_superuser=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
+            with mock.patch("core.vision.detect") as detect:
+                detect.side_effect = [
+                    {"kind": "invoice", "invoice_amount": 100, "invoice_no": "INV1",
+                     "items_summary": "移动硬盘"},
+                    {"kind": "payment", "amount": 100, "order_no": ALIPAY_ORDER_NO},
+                ]
+                with mock.patch(
+                    "core.vision.field_suggest",
+                    return_value={"suggestions": [{"title": "硬盘", "category_id": self.category.pk}]},
+                ):
+                    out = self.call(tmp, "--batch", "导入测试批")
+        batch = Batch.objects.get(name="导入测试批")
+        item = Item.objects.get()
+        self.assertEqual(item.owner, self.student)  # 人名张三按 first_name 匹配
+        self.assertEqual(item.status, Item.STATUS_PENDING)
+        self.assertEqual(item.batch, batch)
+        self.assertEqual(item.title, "硬盘")
+        self.assertEqual(str(item.actual_amount), "100.00")
+        self.assertEqual(item.attachments.count(), 2)
+        self.assertIn("建条 1 条", out)
+
+    def test_unknown_person_falls_back_to_executor(self):
+        root = User.objects.create_user("root", password="pw", is_superuser=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "王五", ["invoice.jpg", "payment.jpg"])
+            with mock.patch("core.vision.detect") as detect:
+                detect.side_effect = [
+                    {"kind": "invoice", "invoice_amount": 50},
+                    {"kind": "payment", "amount": 50, "order_no": ALIPAY_ORDER_NO},
+                ]
+                with mock.patch("core.vision.field_suggest", return_value={"suggestions": []}):
+                    out = self.call(tmp, "--batch", "导入测试批")
+        item = Item.objects.get()
+        self.assertEqual(item.owner, root)
+        self.assertIn("人名 王五 无匹配账号", out)
+        self.assertIn("owner=执行者 root", out)
+
+    def test_single_sided_file_reported_not_created(self):
+        User.objects.create_user("root", password="pw", is_superuser=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, None, ["01 论文录用通知.pdf"])
+            with mock.patch("core.vision.detect", return_value={"kind": "invoice", "invoice_amount": 200}):
+                out = self.call(tmp, "--batch", "导入测试批")
+        self.assertEqual(Item.objects.count(), 0)
+        self.assertIn("找不到对应支付记录", out)
+        self.assertIn("未成条目", out)
+
+    def test_dry_run_creates_nothing(self):
+        User.objects.create_user("root", password="pw", is_superuser=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
+            with mock.patch("core.vision.detect") as detect:
+                detect.side_effect = [
+                    {"kind": "invoice", "invoice_amount": 100},
+                    {"kind": "payment", "amount": 100, "order_no": ALIPAY_ORDER_NO},
+                ]
+                with mock.patch("core.vision.field_suggest", return_value={"suggestions": []}):
+                    out = self.call(tmp, "--batch", "导入测试批", "--dry-run")
+        self.assertEqual(Item.objects.count(), 0)
+        self.assertFalse(Batch.objects.filter(name="导入测试批").exists())
+        self.assertIn("DRY-RUN 未落库", out)
