@@ -140,7 +140,12 @@ def _prefill_image(data, kind, prompt):
 
 
 def _prefill_pdf(data, kind, prompt):
-    """PDF：文本充足走文本接口；否则逐页渲染成 PNG 走视觉接口。"""
+    """PDF：文本充足走文本接口；否则逐页渲染识别。
+
+    多页同为一种票据时合并结果——支付/退款金额相加（一份账单 PDF 常含多笔支付，
+    如 20260924 批次的 100+50+10 对一张 160 发票），发票金额取首个非空值（多页
+    通常是同一发票重复打印）；各页类型不一致时退回首个有效页的结果。
+    """
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         text = "\n".join(page.get_text() for page in doc).strip()
         if len(text) >= PDF_TEXT_MIN_CHARS:
@@ -148,14 +153,39 @@ def _prefill_pdf(data, kind, prompt):
             if result:
                 result["_source"] = "text"
                 return result
+        results = []
         for page in doc:
             matrix = pymupdf.Matrix(PDF_RENDER_SCALE, PDF_RENDER_SCALE)
             png = page.get_pixmap(matrix=matrix).tobytes("png")
             result = _recognize([_image_part(png), _text_part(prompt)], kind)
             if result:
-                result["_source"] = "image"
-                return result
-    return {}
+                results.append(result)
+    if not results:
+        return {}
+    merged = _merge_page_results(results)
+    merged["_source"] = "image"
+    return merged
+
+
+def _merge_page_results(results):
+    """合并逐页识别结果；各页类型不一致时返回首个有效页。"""
+    kinds = {result.get("kind") for result in results} - {"unknown", None}
+    if len(kinds) != 1:
+        return dict(results[0])
+    merged = dict(results[0])
+    if merged.get("kind") in ("payment", "refund"):
+        values = [result.get("amount") for result in results if result.get("amount") is not None]
+        if values:
+            merged["amount"] = round(sum(values), 2)
+    for key in ("order_no", "merchant_no", "invoice_no", "remark_order_no", "items_summary"):
+        for result in results:
+            if result.get(key):
+                merged[key] = result[key]
+                break
+    notes = [result.get("handwritten_notes") for result in results if result.get("handwritten_notes")]
+    if notes:
+        merged["handwritten_notes"] = "；".join(notes)
+    return merged
 
 
 def _recognize(parts, kind):
@@ -310,9 +340,8 @@ def group_suggest(records):
         "groups 只包含能配对的记录 id，配不上的不要输出。"
     )
     try:
-        content = _content(_text_part(
-            prompt + "\n\n记录列表：\n" + json.dumps(records, ensure_ascii=False)
-        ))
+        content = _content([_text_part(
+            prompt + "\n\n记录列表：\n" + json.dumps(records, ensure_ascii=False))])
         if content is None:
             return []
         valid = {record["id"] for record in records}
@@ -348,10 +377,9 @@ def field_suggest(groups, categories):
         "suggestions 与组顺序一致、等长。"
     )
     try:
-        content = _content(_text_part(
+        content = _content([_text_part(
             prompt + "\n\n分组：\n" + json.dumps(groups, ensure_ascii=False)
-            + "\n\n类别表：\n" + json.dumps(categories, ensure_ascii=False)
-        ))
+            + "\n\n类别表：\n" + json.dumps(categories, ensure_ascii=False))])
         if content is None:
             return {}
         suggestions = _load_json(content).get("suggestions")

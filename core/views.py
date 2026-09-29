@@ -549,7 +549,7 @@ AGENT_MAX_ROUNDS = 3
 AGENT_MAX_REREADS = 6
 _AGENT_UNRESOLVED_KINDS = (Attachment.KIND_INVOICE, Attachment.KIND_PAYMENT)
 _AGENT_FIELDS = ("kind", "amount", "order_no", "merchant_no", "invoice_no",
-                 "remark_order_no", "handwritten_notes", "invoice_amount")
+                 "remark_order_no", "handwritten_notes")
 
 
 def _unresolved_ids(pending, solo, unmatched, by_id):
@@ -606,6 +606,8 @@ def batch_agent_round(request):
         if not updated:
             actions.append({"file": label, "text": "重读失败，保留原识别结果"})
             continue
+        if updated.get("kind") == Attachment.KIND_INVOICE and updated.get("invoice_amount") is not None:
+            updated["amount"] = updated["invoice_amount"]  # 发票口径金额统一存 amount
         diffs = []
         for key in _AGENT_FIELDS:
             new = updated.get(key)

@@ -943,6 +943,44 @@ class BatchPairViewTests(SubmissionTestCase):
         self.assertEqual(response.status_code, 302)
 
 
+@override_settings(DEEPSEEK_API_KEY="test-key")
+class VisionRequestShapeTests(SimpleTestCase):
+    def test_group_suggest_sends_content_as_part_list(self):
+        """回归：group_suggest/field_suggest 曾把裸 dict 当 content，DeepSeek 一直 422。"""
+        from core import vision
+        response = {"choices": [{"message": {"content": '{"groups": []}'}}]}
+        with mock.patch.object(vision, "_post", return_value=response) as post_mock:
+            vision.group_suggest([{"id": 0, "kind": "invoice", "amount": "10"}])
+        payload = post_mock.call_args[0][0]
+        content = payload["messages"][0]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0]["type"], "text")
+
+    def test_merge_page_results_sums_payments_and_keeps_first_no(self):
+        """多笔支付合一份 PDF：金额相加，单号取首个；类型不一致退回首页。"""
+        from core import vision
+        pages = [
+            {"kind": "payment", "amount": 100.0, "order_no": "A1"},
+            {"kind": "payment", "amount": 50.0, "order_no": "B2"},
+            {"kind": "payment", "amount": 10.0, "order_no": "C3"},
+        ]
+        merged = vision._merge_page_results(pages)
+        self.assertEqual(merged["kind"], "payment")
+        self.assertEqual(merged["amount"], 160.0)
+        self.assertEqual(merged["order_no"], "A1")
+        mixed = [{"kind": "invoice", "amount": 20.0}, {"kind": "payment", "amount": 20.0}]
+        self.assertEqual(vision._merge_page_results(mixed)["kind"], "invoice")
+
+    def test_merge_page_results_invoice_takes_first_amount(self):
+        """发票多页（重复打印）金额不累加。"""
+        from core import vision
+        pages = [
+            {"kind": "invoice", "invoice_amount": 160.0},
+            {"kind": "invoice", "invoice_amount": 160.0},
+        ]
+        self.assertEqual(vision._merge_page_results(pages)["invoice_amount"], 160.0)
+
+
 @override_settings(DEEPSEEK_API_KEY="test-key", MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchAgentRoundTests(SubmissionTestCase):
     def _stage_two(self):
@@ -956,7 +994,7 @@ class BatchAgentRoundTests(SubmissionTestCase):
 
     def test_reread_corrections_merge_and_regroup(self):
         session_id, invoice_id, payment_id = self._stage_two()
-        corrected = {"kind": "invoice", "amount": 100.0, "remark_order_no": "X1",
+        corrected = {"kind": "invoice", "invoice_amount": 100.0, "remark_order_no": "X1",
                      "handwritten_notes": "30 划掉改 100"}
         unchanged = {"kind": "payment", "amount": 100.0, "order_no": "X1"}
         with mock.patch("core.vision.group_suggest", return_value=[]), \
