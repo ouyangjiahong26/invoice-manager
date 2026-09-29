@@ -98,6 +98,7 @@ LOGOUT_REDIRECT_URL = "login"
 
 # nginx 等反代后还原真实协议（file_serve 超链接、CSRF 判断依赖它）
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+X_FRAME_OPTIONS = "SAMEORIGIN"  # 侧边栏/浮层用同源 iframe 内嵌票据 PDF（DENY 会连自己一起拦）
 
 # DeepSeek 识图预填；DEEPSEEK_API_KEY 为空时预填整体关闭
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
