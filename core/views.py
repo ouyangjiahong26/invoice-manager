@@ -51,7 +51,7 @@ def _first_error(form, errors):
 
 @login_required
 def board(request):
-    """表格主视图：按批次展示全部条目，seq 为导出序号；筛选/行内编辑/拖拽调序由前端承载。"""
+    """表格主视图：按批次展示全部条目，序号=该批 approved 条目的导出序号；筛选/行内编辑/拖拽调序由前端承载。"""
     batches = Batch.objects.all()
     current = None
     batch_id = request.GET.get("batch", "")
@@ -67,7 +67,8 @@ def board(request):
             .prefetch_related("attachments")
             .order_by("category__order", "category__id", "position", "id")
         )
-        for seq, item in enumerate(items, start=1):
+        seq = 0
+        for item in items:
             counts = {"invoice": 0, "payment": 0, "refund": 0}
             for attachment in item.attachments.all():
                 if attachment.kind in counts:
@@ -75,8 +76,13 @@ def board(request):
             if item.owner_id not in seen_payers:
                 seen_payers.add(item.owner_id)
                 payers.append(item.owner)
+            if item.status == Item.STATUS_APPROVED:
+                seq += 1  # 与导出一致：只对 approved 连续编号
+                row_seq = seq
+            else:
+                row_seq = None  # 待审/退回不占号，展示为 —
             rows.append({
-                "seq": seq,
+                "seq": row_seq,
                 "item": item,
                 "can_edit": request.user.is_staff or item.owner_id == request.user.id,
                 "counts": counts,
