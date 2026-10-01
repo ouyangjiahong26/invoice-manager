@@ -8,6 +8,7 @@ from decimal import Decimal
 from io import BytesIO, StringIO
 from email.header import decode_header
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from django.contrib import admin
@@ -19,7 +20,9 @@ from django.test import RequestFactory, SimpleTestCase, TestCase, override_setti
 
 from openpyxl import load_workbook
 
-from . import pairing, vision
+import pymupdf
+
+from . import pairing, stamping, vision
 from .audit import ActorMiddleware
 from .models import Attachment, AuditLog, Batch, Category, Item
 from .validation import check_item
@@ -261,7 +264,164 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         self.assertTrue(any("_支付记录_1." in name for name in names))
 
 
+class OrderLineTests(SimpleTestCase):
+    """发票首页单号行前缀称谓：platform 优先、单号前缀推断、兜底；空单号跳过。"""
+
+    @staticmethod
+    def _payment(order_no, ocr_data=None):
+        return SimpleNamespace(order_no=order_no, ocr_data=ocr_data)
+
+    def test_label_prefers_platform_then_prefix_then_fallback(self):
+        wechat = "4" + "1" * 27
+        self.assertEqual(
+            stamping.order_lines([self._payment(ALIPAY_ORDER_NO, {"platform": "wechat"})]),
+            [f"交易单号: {ALIPAY_ORDER_NO}"],  # platform 优先于单号前缀
+        )
+        self.assertEqual(stamping.order_lines([self._payment(ALIPAY_ORDER_NO)]),
+                         [f"订单号: {ALIPAY_ORDER_NO}"])
+        self.assertEqual(stamping.order_lines([self._payment(wechat)]),
+                         [f"交易单号: {wechat}"])
+        self.assertEqual(
+            stamping.order_lines([self._payment("X123", {"platform": "other"})]),
+            ["平台单号: X123"],
+        )
+
+    def test_blank_order_no_skipped(self):
+        self.assertEqual(
+            stamping.order_lines([self._payment(""), self._payment(None)]), []
+        )
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ExportStampingTests(SubmissionTestCase):
+    """导出 zip 票据标注：全部附件每页盖序号、第一张发票附件首页写单号、图片转 PDF。"""
+
+    @staticmethod
+    def _pdf_bytes(pages=1):
+        doc = pymupdf.open()
+        for _ in range(pages):
+            doc.new_page()
+        return doc.tobytes()
+
+    @staticmethod
+    def _png_bytes(width=200, height=200):
+        """生成空白 PNG；1x1 图转 PDF 页高不足 1pt，标注文字会落在页外。"""
+        return pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height)).tobytes("png")
+
+    def _item(self, **kwargs):
+        data = {"owner": self.student, "title": "书", "category": self.category,
+                "batch": self.batch, "actual_amount": "100.00",
+                "invoice_amount": "100.00", "status": Item.STATUS_APPROVED}
+        data.update(kwargs)
+        return Item.objects.create(**data)
+
+    def _attach(self, item, kind, name, data, **kwargs):
+        return Attachment.objects.create(
+            item=item, kind=kind, file=SimpleUploadedFile(name, data), **kwargs)
+
+    def _export(self):
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/zip/", {"batch": self.batch.pk})
+        return zipfile.ZipFile(BytesIO(response.content))
+
+    @staticmethod
+    def _red_spans(data):
+        """PDF 字节 → [(页号, 红色文本)]，只取标注色文字，不依赖 span 顺序。"""
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        return [
+            (pno, span["text"])
+            for pno, page in enumerate(doc)
+            for block in page.get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"]
+            if span["color"] == 0xFF0000
+        ]
+
+    def test_stamps_every_page_and_order_lines_on_first_invoice(self):
+        item = self._item()
+        self._attach(item, Attachment.KIND_INVOICE, "inv.pdf", self._pdf_bytes(2))
+        self._attach(item, Attachment.KIND_INVOICE, "support.pdf", self._pdf_bytes(1))
+        self._attach(item, Attachment.KIND_PAYMENT, "pay.png", self._png_bytes(),
+                     order_no=ALIPAY_ORDER_NO, ocr_data={"platform": "alipay"})
+        self._attach(item, Attachment.KIND_REFUND, "ref.pdf", self._pdf_bytes(1))
+        zf = self._export()
+        names = zf.namelist()
+        self.assertEqual(len(names), 4)
+        invoice, support = (n for n in sorted(names) if "_发票_" in n)
+        payment = next(n for n in names if "_支付记录_" in n)
+        refund = next(n for n in names if "_退款记录_" in n)
+        self.assertTrue(payment.endswith(".pdf"))  # 图片附件导出为 PDF
+        self.assertEqual(
+            sorted(self._red_spans(zf.read(invoice))),
+            sorted([(0, "01"), (0, f"订单号: {ALIPAY_ORDER_NO}"), (1, "01")]),
+        )
+        self.assertEqual(self._red_spans(zf.read(support)), [(0, "01")])  # 佐证只盖序号
+        self.assertEqual(self._red_spans(zf.read(payment)), [(0, "01")])
+        self.assertEqual(self._red_spans(zf.read(refund)), [(0, "01")])
+
+    def test_multiple_payments_all_written(self):
+        item = self._item()
+        self._attach(item, Attachment.KIND_INVOICE, "inv.pdf", self._pdf_bytes())
+        wechat = "4" + "1" * 27
+        self._attach(item, Attachment.KIND_PAYMENT, "p1.png", self._png_bytes(),
+                     order_no=ALIPAY_ORDER_NO)
+        self._attach(item, Attachment.KIND_PAYMENT, "p2.png", self._png_bytes(),
+                     order_no=wechat)
+        zf = self._export()
+        invoice = next(n for n in zf.namelist() if "_发票_1." in n)
+        self.assertEqual(
+            sorted(self._red_spans(zf.read(invoice))),
+            sorted([(0, "01"), (0, f"订单号: {ALIPAY_ORDER_NO}"),
+                    (0, f"交易单号: {wechat}")]),
+        )
+
+    def test_broken_file_kept_verbatim(self):
+        item = self._item()
+        self._attach(item, Attachment.KIND_INVOICE, "bad.pdf", b"not a pdf")
+        self._attach(item, Attachment.KIND_PAYMENT, "p.png", self._png_bytes(),
+                     order_no=ALIPAY_ORDER_NO)
+        zf = self._export()
+        invoice = next(n for n in zf.namelist() if "_发票_1." in n)
+        self.assertEqual(zf.read(invoice), b"not a pdf")  # 标注失败原样放入
+        payment = next(n for n in zf.namelist() if "_支付记录_1." in n)
+        self.assertEqual(self._red_spans(zf.read(payment)), [(0, "01")])
+
+    def test_item_without_invoice_stamps_payment_only(self):
+        item = self._item()
+        self._attach(item, Attachment.KIND_PAYMENT, "p.png", self._png_bytes(),
+                     order_no=ALIPAY_ORDER_NO)
+        zf = self._export()
+        payment = next(n for n in zf.namelist() if "_支付记录_1." in n)
+        self.assertEqual(self._red_spans(zf.read(payment)), [(0, "01")])
+
+    def test_layout_matches_manual_spec(self):
+        """布局对齐人工批次规格：hebo 22pt 序号距底 12pt；china-s 8.5pt 单号距底 34pt。"""
+        item = self._item()
+        self._attach(item, Attachment.KIND_INVOICE, "inv.pdf", self._pdf_bytes(1))
+        self._attach(item, Attachment.KIND_PAYMENT, "p.png", self._png_bytes(300, 200),
+                     order_no=ALIPAY_ORDER_NO)
+        zf = self._export()
+        invoice = next(n for n in zf.namelist() if "_发票_1." in n)
+        doc = pymupdf.open(stream=zf.read(invoice), filetype="pdf")
+        page = doc[0]
+        height = page.rect.height
+        spans = {
+            span["text"]: span
+            for block in page.get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"] if span["color"] == 0xFF0000
+        }
+        seq = spans["01"]
+        self.assertEqual(seq["font"], "Helvetica-Bold")
+        self.assertEqual(seq["size"], 22.0)
+        self.assertEqual(seq["origin"], (12.0, height - 12.0))
+        order = spans[f"订单号: {ALIPAY_ORDER_NO}"]
+        self.assertEqual(order["font"], "Heiti")
+        self.assertEqual(order["size"], 8.5)
+        self.assertEqual(order["origin"], (12.0, height - 34.0))
+
 @override_settings(EXPECTED_INVOICE_TITLE="", EXPECTED_INVOICE_TAX_ID="")
+
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class CheckItemTests(SubmissionTestCase):
     def _item(self, **kwargs):
@@ -289,9 +449,17 @@ class CheckItemTests(SubmissionTestCase):
         item = self._item()
         self._payment(item, order_no="")
         self.assertIn(
-            "某笔支付缺少 28 位平台单号（支付宝订单号/微信交易单号），报销时需抄到发票上",
+            "某笔支付的平台单号格式不符（支付宝订单号/微信交易单号），报销时需抄到发票上",
             check_item(item),
         )
+
+    def test_union_32_digit_order_no_passes(self):
+        """银联等银行渠道单号 20 开头可到 32 位（20260924 批次实测），不再误报。"""
+        item = self._item()
+        self._payment(item, order_no="20251216102935823001062270225585")
+        self.assertEqual(check_item(item), [])
+        self._payment(item, order_no="20" + "1" * 31, amount=None)  # 33 位超出渠道上限
+        self.assertIn("平台单号格式不符", check_item(item)[0])
 
     def test_refund_net_amount_is_clean(self):
         item = self._item(actual_amount="179.00", invoice_amount="199.00")

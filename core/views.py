@@ -20,7 +20,7 @@ from django.views.decorators.http import require_POST
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from . import pairing, staging, vision
+from . import pairing, staging, stamping, vision
 from .attachments import KIND_LABELS, attachment_groups, build_attachment, decimal_or_none, plan_decimal
 from .audit import attachment_entries, attachment_entry, mark_attachments
 from .forms import AttachmentForm, ItemPanelForm
@@ -885,10 +885,21 @@ def export_zip(request):
             for item in items:
                 seq += 1  # 与 Excel"序号"列一致（全局连续）
                 counters = {}
+                payments = [a for a in item.attachments.all()
+                            if a.kind == Attachment.KIND_PAYMENT]
+                first_invoice = item.first_invoice
+                # 各支付记录的平台单号逐行写在第一张发票附件首页（CONTEXT.md 票据标注）
+                order_lines = stamping.order_lines(payments) if first_invoice else []
                 for attachment in item.attachments.all():
                     kind_label = KIND_LABELS[attachment.kind]
                     counters[kind_label] = counters.get(kind_label, 0) + 1
+                    data = attachment.file.read()
                     extension = attachment.file.name.rsplit(".", 1)[-1]
+                    lines = (order_lines if first_invoice
+                             and attachment.pk == first_invoice.pk else [])
+                    stamped = stamping.stamped_pdf(data, attachment.file.name, f"{seq:02d}", lines)
+                    if stamped is not None:
+                        data, extension = stamped, "pdf"
                     name = (
                         f"{category.name}_{seq:02d}_{item.payer_name}"
                         f"_{kind_label}_{counters[kind_label]}.{extension}"
@@ -899,7 +910,7 @@ def export_zip(request):
                             f"_{kind_label}_{counters[kind_label]}_{item.pk}.{extension}"
                         )
                     seen.add(name)
-                    zf.writestr(name, attachment.file.read())
+                    zf.writestr(name, data)
     response = HttpResponse(buffer.getvalue(), content_type="application/zip")
     response["Content-Disposition"] = _download_filename("报销材料", batch, "zip")
     return response
