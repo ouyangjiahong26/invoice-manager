@@ -1468,6 +1468,80 @@ class ExportBatchTests(SubmissionTestCase):
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ArchivedBatchLockTests(SubmissionTestCase):
+    """存档批次只读：条目/附件/调序写操作对 owner 与 staff 一致拒绝，界面不渲染编辑控件。"""
+
+    def setUp(self):
+        super().setUp()
+        self.archived = Batch.objects.create(name="2025 存档批", archived=True)
+        self.a_item = Item.objects.create(
+            owner=self.student, batch=self.archived, category=self.category,
+            title="存档条目", actual_amount=Decimal("10"), position=Item.next_position(),
+        )
+
+    def test_field_update_rejected_for_owner_and_staff(self):
+        for user in (self.student, self.staff):
+            with self.subTest(user=user.username):
+                self.client.force_login(user)
+                response = self.client.post(
+                    f"/items/{self.a_item.pk}/field/",
+                    data=json.dumps({"field": "title", "value": "改存档"}),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 403)
+        self.a_item.refresh_from_db()
+        self.assertEqual(self.a_item.title, "存档条目")
+
+    def test_update_delete_reorder_rejected_for_staff(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/items/{self.a_item.pk}/edit/",
+            _item_data(category=self.category.pk, owner=self.staff.pk, status=Item.STATUS_PENDING),
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.client.post(f"/items/{self.a_item.pk}/delete/").status_code, 403)
+        response = self.client.post(
+            "/items/reorder/",
+            data=json.dumps({"order": [self.a_item.pk], "category": self.category.pk}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Item.objects.filter(pk=self.a_item.pk).exists())
+
+    def test_attachment_write_rejected_for_staff(self):
+        att = Attachment.objects.create(
+            item=self.a_item, kind=Attachment.KIND_INVOICE,
+            file=SimpleUploadedFile("f.png", b"x", content_type="image/png"),
+            amount=Decimal("10"),
+        )
+        self.client.force_login(self.staff)
+        self.assertEqual(
+            self.client.post(f"/items/attachments/{att.pk}/edit/", {"amount": "11"}).status_code, 403
+        )
+        self.assertEqual(
+            self.client.post(f"/items/attachments/{att.pk}/delete/").status_code, 403
+        )
+        self.assertTrue(Attachment.objects.filter(pk=att.pk).exists())
+
+    def test_board_and_panel_render_readonly_for_staff(self):
+        self.client.force_login(self.staff)
+        response = self.client.get("/", {"batch": self.archived.pk})
+        self.assertContains(response, "（已存档）")
+        self.assertNotContains(response, '<td class="drag-handle"')
+        self.assertNotContains(response, 'class="danger small row-del"')
+        panel = self.client.get(f"/items/{self.a_item.pk}/panel/")
+        self.assertIsNone(panel.context.get("form"))
+        self.assertContains(panel, "已存档")
+
+    def test_create_rejected_when_latest_batch_archived(self):
+        Batch.objects.all().update(archived=True)
+        self.client.force_login(self.student)
+        response = self.client.post("/items/new/", _item_data(category=self.category.pk))
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.count(), 1)  # 仅剩 setUp 的存档条目，未新建
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchAddTests(SubmissionTestCase):
     def test_staff_creates_batch(self):
         self.client.force_login(self.staff)

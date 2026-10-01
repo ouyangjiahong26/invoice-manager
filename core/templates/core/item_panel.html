@@ -9,6 +9,7 @@
   <b>{{ item.title }}</b>
   <span class="meta">{{ item.category.name }} · {{ item.payer_name }}{% if item.batch %} · {{ item.batch.name }}{% endif %}</span>
   <span class="badge {{ item.status }}">{{ item.get_status_display }}</span>
+  {% if item.batch.archived %}<span class="meta">已存档</span>{% endif %}
   <span class="meta">{{ item.created_at|date:"Y-m-d" }} 提交</span>
   <span class="spacer"></span>
   <button type="button" class="secondary small panel-close">关闭</button>

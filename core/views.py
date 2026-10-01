@@ -88,7 +88,7 @@ def board(request):
             rows.append({
                 "seq": row_seq,
                 "item": item,
-                "can_edit": request.user.is_staff or item.owner_id == request.user.id,
+                "can_edit": (request.user.is_staff or item.owner_id == request.user.id) and not current.archived,
                 "counts": counts,
             })
 
@@ -127,6 +127,9 @@ def item_create(request):
         if batch is None:
             messages.error(request, "请先创建批次")
             return redirect("board")
+        if batch.archived:
+            messages.error(request, "最新批次已存档，请新建批次后再提交")
+            return redirect("board")
         form = ItemPanelForm(request.POST, request.FILES, staff=request.user.is_staff)
         attachments, errors = _collect_new_attachments(request)
         if form.is_valid() and not errors:
@@ -155,7 +158,7 @@ def item_create(request):
     return render(request, "core/item_panel.html", {
         "form": form,
         "is_create": True,
-        "can_edit": True,
+        "can_edit": not (batch and batch.archived),
         "is_staff": request.user.is_staff,
     })
 
@@ -165,6 +168,7 @@ def item_update(request, pk):
     item = get_object_or_404(Item, pk=pk)
     if item.owner_id != request.user.id and not request.user.is_staff:
         raise PermissionDenied("只能修改自己的条目")
+    _reject_archived(item)
     if request.method == "POST":
         form = ItemPanelForm(request.POST, request.FILES, instance=item, staff=request.user.is_staff)
         attachments, errors = _collect_new_attachments(request)
@@ -194,7 +198,7 @@ def item_update(request, pk):
         "form": form,
         "item": item,
         "is_create": False,
-        "can_edit": True,
+        "can_edit": not item.batch.archived,
         "is_staff": request.user.is_staff,
         "audit_logs": item.audit_logs.all(),
         "attachment_groups": attachment_groups(item),
@@ -208,7 +212,7 @@ def item_panel(request, pk):
     item = get_object_or_404(
         Item.objects.select_related("owner", "category", "batch"), pk=pk
     )
-    can_edit = request.user.is_staff or item.owner_id == request.user.id
+    can_edit = (request.user.is_staff or item.owner_id == request.user.id) and not item.batch.archived
     context = {
         "item": item,
         "is_create": False,
@@ -230,6 +234,7 @@ def item_field_update(request, pk):
     item = get_object_or_404(Item, pk=pk)
     if item.owner_id != request.user.id and not request.user.is_staff:
         raise PermissionDenied("只能修改自己的条目")
+    _reject_archived(item)
     try:
         payload = json.loads(request.body or "{}")
     except ValueError:
@@ -299,6 +304,8 @@ def item_reorder(request):
     items = {obj.pk: obj for obj in Item.objects.filter(pk__in=pks)}
     if len(items) != len(pks):
         return JsonResponse({"error": "order 含不存在的条目"}, status=400)
+    if any(obj.batch.archived for obj in items.values()):
+        return JsonResponse({"error": "已存档批次不可调整顺序"}, status=403)
     if any(obj.category_id != category.pk for obj in items.values()):
         return JsonResponse({"error": "order 含跨类别的条目"}, status=400)
     batch_id = next(iter(items.values())).batch_id
@@ -323,6 +330,7 @@ def item_delete(request, pk):
     item = get_object_or_404(Item, pk=pk)
     if item.owner_id != request.user.id and not request.user.is_staff:
         raise PermissionDenied("只能删除自己的条目")
+    _reject_archived(item)
     mark_attachments(item, attachment_entries(item), [])
     item.delete()
     if _is_fetch(request):
@@ -658,6 +666,8 @@ def batch_submit(request):
     batch = Batch.objects.first()
     if batch is None:
         return JsonResponse({"error": "请先创建批次"}, status=400)
+    if batch.archived:
+        return JsonResponse({"error": "最新批次已存档，请新建批次后再提交"}, status=400)
 
     prepared, opened = [], []
     for number, group in enumerate(raw_groups, start=1):
@@ -741,10 +751,17 @@ def batch_submit(request):
     return redirect("board")
 
 
+def _reject_archived(item):
+    """存档批次只读：任何写操作一律拒绝（学生与 staff 一致），解锁走 admin 改标记。"""
+    if item.batch.archived:
+        raise PermissionDenied("已存档批次不可修改")
+
 def _owned_attachment(request, pk):
     attachment = get_object_or_404(Attachment, pk=pk)
     if attachment.item.owner_id != request.user.id and not request.user.is_staff:
         raise PermissionDenied("只能修改自己的条目")
+    if attachment.item.batch.archived:
+        raise PermissionDenied("已存档批次不可修改")
     return attachment
 
 

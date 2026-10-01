@@ -19,6 +19,8 @@ class Category(models.Model):
 class Batch(models.Model):
     name = models.CharField("批次名称", max_length=100, unique=True)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    archived = models.BooleanField("已存档", default=False, help_text="存档批次只读：条目与附件不可增改删")
+
 
     class Meta:
         ordering = ["-created_at"]

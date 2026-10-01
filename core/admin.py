@@ -118,7 +118,8 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
-    list_display = ("name", "created_at", "item_count")
+    list_display = ("name", "created_at", "archived", "item_count")
+    list_editable = ("archived",)
     search_fields = ("name",)
 
     @admin.display(description="条目数")
