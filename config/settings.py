@@ -114,3 +114,9 @@ DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.co
 # 期望的发票抬头/税号；为空则跳过该项校验
 EXPECTED_INVOICE_TITLE = os.environ.get("EXPECTED_INVOICE_TITLE", "").strip()
 EXPECTED_INVOICE_TAX_ID = os.environ.get("EXPECTED_INVOICE_TAX_ID", "").strip()
+
+# 导出票据标注布局（单位 pt；默认对齐人工批次处理流程参数），见 core/stamping.py
+EXPORT_STAMP_MARGIN = float(os.environ.get("EXPORT_STAMP_MARGIN", "12"))
+EXPORT_STAMP_SEQ_SIZE = float(os.environ.get("EXPORT_STAMP_SEQ_SIZE", "22"))
+EXPORT_STAMP_ORDER_SIZE = float(os.environ.get("EXPORT_STAMP_ORDER_SIZE", "8.5"))
+EXPORT_STAMP_ORDER_GAP = float(os.environ.get("EXPORT_STAMP_ORDER_GAP", "13"))

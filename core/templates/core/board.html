@@ -469,7 +469,7 @@
       suggestions: [{role: "amount", key: "amount"}, {role: "order_no", key: "order_no"}, {role: "merchant_no", key: "merchant_no"}]
     }
   };
-  var ORDER_NO_RE = /^(20\d{26}|4\d{26})$/;
+  var ORDER_NO_RE = /^(20\d{26,30}|4\d{26})$/;
   var TOLERANCE = 0.005;
   var manualMatch = false;
 
@@ -815,7 +815,7 @@
         + '</b>；净额 <b>¥' + state.net.toFixed(2) + '</b></div>');
       if (state.badNo.length) {
         parts.push('<div class="line warn">平台单号格式有误：' + state.badNo.join("、")
-          + "（平台单号应为 28 位：支付宝订单号 20 开头 / 微信交易单号 4 开头）</div>");
+          + "（支付宝订单号 20 开头 28–32 位 / 微信交易单号 4 开头 28 位）</div>");
       } else if (state.matched) {
         parts.push('<div class="line ok">单号已互配</div>');
       } else if (state.remarks) {

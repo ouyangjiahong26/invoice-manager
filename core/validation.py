@@ -14,8 +14,8 @@ from .models import Attachment
 
 # 截图 RGB 均值低于该阈值视为疑似深色模式
 DARK_MEAN_THRESHOLD = 80
-# 平台单号：支付宝订单号（20 开头）/ 微信交易单号（4 开头），均 28 位
-PLATFORM_ORDER_NO_RE = re.compile(r"^(20\d{26}|4\d{26})\Z")
+# 平台单号：支付宝订单号（20 开头，28 位，银联等银行渠道可到 32 位）/ 微信交易单号（4 开头，28 位）
+PLATFORM_ORDER_NO_RE = re.compile(r"^(20\d{26,30}|4\d{26})\Z")
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 AMOUNT_TOLERANCE = Decimal("0.005")
 
@@ -46,7 +46,7 @@ def check_item(item):
         warnings.append("实付金额高于发票金额，请核对")
 
     if any(not PLATFORM_ORDER_NO_RE.match(a.order_no or "") for a in payments):
-        warnings.append("某笔支付缺少 28 位平台单号（支付宝订单号/微信交易单号），报销时需抄到发票上")
+        warnings.append("某笔支付的平台单号格式不符（支付宝订单号/微信交易单号），报销时需抄到发票上")
 
     if any(a.file.name.lower().endswith(IMAGE_SUFFIXES) and _is_dark(a.file)
            for a in payments + refunds):
