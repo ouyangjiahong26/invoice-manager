@@ -141,12 +141,17 @@ class Command(BaseCommand):
                 if not result or not kind:
                     self.detect_failed.append(f"[{note}] {path.name}")
                     continue
-                amount = result.get("invoice_amount") if kind == "invoice" else result.get("amount")
+                amount = decimal_or_none(
+                    result.get("invoice_amount") if kind == "invoice" else result.get("amount")
+                )
+                if amount is not None and amount < 0:
+                    self.detect_failed.append(f"[{note}] {path.name}（识别金额为负）")
+                    continue
                 record_id += 1
                 records.append({
                     "id": record_id,
                     "kind": kind,
-                    "amount": decimal_or_none(amount),
+                    "amount": amount,
                     "order_no": result.get("order_no") or "",
                     "merchant_no": result.get("merchant_no") or "",
                     "invoice_no": result.get("invoice_no") or "",
@@ -238,9 +243,9 @@ class Command(BaseCommand):
             category_note = "（类别无有效建议，回退第一个类别）"
 
         amounts_missing = [m["name"] for m in members if m["amount"] is None]
-        paid = sum((m["amount"] for m in payments), Decimal("0"))
-        refunded = sum((m["amount"] for m in refunds), Decimal("0"))
-        invoice_total = sum((m["amount"] for m in invoices), Decimal("0"))
+        paid = sum((m["amount"] for m in payments if m["amount"] is not None), Decimal("0"))
+        refunded = sum((m["amount"] for m in refunds if m["amount"] is not None), Decimal("0"))
+        invoice_total = sum((m["amount"] for m in invoices if m["amount"] is not None), Decimal("0"))
 
         attachments = [
             build_attachment(

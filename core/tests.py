@@ -1555,6 +1555,36 @@ class ImportBatchCommandTests(SubmissionTestCase):
         self.assertIn("找不到对应支付记录", out)
         self.assertIn("未成条目", out)
 
+
+    def test_negative_amount_file_reported_not_created(self):
+        """识别出负数金额的文件按识别失败报告，导入不中断、不建条目。"""
+        User.objects.create_user("root", password="pw", is_superuser=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
+            with mock.patch("core.vision.detect") as detect:
+                detect.side_effect = [
+                    {"kind": "invoice", "invoice_amount": -5},
+                    {"kind": "payment", "amount": 100},
+                ]
+                out = self.call(tmp, "--batch", "导入测试批")
+        self.assertEqual(Item.objects.count(), 0)
+        self.assertIn("识别金额为负", out)
+        self.assertIn("找不到对应发票", out)
+
+    def test_missing_amount_attachments_do_not_break_import(self):
+        """附件识别不到金额时导入不崩溃（旧实现对 None 求和直接 TypeError），无法配对的按未成条目报告。"""
+        User.objects.create_user("root", password="pw", is_superuser=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
+            with mock.patch("core.vision.detect") as detect:
+                detect.side_effect = [
+                    {"kind": "invoice", "invoice_amount": 100},
+                    {"kind": "payment"},
+                ]
+                out = self.call(tmp, "--batch", "导入测试批")
+        self.assertEqual(Item.objects.count(), 0)
+        self.assertIn("payment.jpg", out)
+
     def test_dry_run_creates_nothing(self):
         User.objects.create_user("root", password="pw", is_superuser=True)
         with tempfile.TemporaryDirectory() as tmp:
