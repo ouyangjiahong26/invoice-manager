@@ -36,8 +36,9 @@ PAYMENT_PROMPT = (
     "这是一张支付凭证（支付宝或微信的支付记录、账单或交易详情）。只输出一个 JSON 对象，"
     '不要输出任何其他文字或代码围栏，格式：{"amount": 数字, "platform": "alipay|wechat|other|unknown", '
     '"order_no": "平台单号", "merchant_no": "商户单号"}。'
-    "amount 为支付金额（元，数字）；order_no 指平台交易单号：支付宝订单号（20 开头，共 28 位）"
-    "或微信交易单号（4 开头，共 28 位）；merchant_no 指商家订单号/商户单号（长度不定、可含字母）。"
+    "amount 为支付金额（元，数字）；order_no 指平台交易单号：支付宝订单号（20 开头，通常 28 位，"
+    "银联等银行渠道可到 32 位）或微信交易单号（4 开头，共 28 位）；"
+    "merchant_no 指商家订单号/商户单号（长度不定、可含字母）。"
     '无法识别的字段：amount 用 null，platform 用 "unknown"，其余用空字符串。'
 )
 
@@ -66,7 +67,8 @@ DETECT_PROMPT = (
     '"merchant_no": "商户单号", "handwritten_notes": "图面上的手写文字"}。'
     "kind 为票据类型：invoice 发票 / payment 支付凭证 / refund 退款凭证，看不出类型用 unknown；"
     "invoice_amount 为价税合计，amount 为支付或退款金额（元，数字）；"
-    "order_no 指平台交易单号：支付宝订单号（20 开头，共 28 位）或微信交易单号（4 开头，共 28 位）；"
+    "order_no 指平台交易单号：支付宝订单号（20 开头，通常 28 位，银联等银行渠道可到 32 位）"
+    "或微信交易单号（4 开头，共 28 位）；"
     "merchant_no 指商家订单号/商户单号（长度不定、可含字母）。"
     "handwritten_notes 抄录图面上所有手写内容（如手写编号、手写金额、勾画批注），没有手写用空字符串。"
     "与票据类型无关的字段以及无法识别的字段：金额用 null，platform 用 \"unknown\"，其余用空字符串。"
