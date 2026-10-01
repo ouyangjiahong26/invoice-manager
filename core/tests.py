@@ -1113,6 +1113,16 @@ class BoardTableTests(SubmissionTestCase):
         self.assertNotContains(response, "新建批次")
         self.assertNotContains(response, "导出 Excel")
 
+    def test_export_buttons_follow_download_origin(self):
+        """配置 DOWNLOAD_ORIGIN 后导出按钮指向下载域；未配置保持相对链接。"""
+        self.client.force_login(self.staff)
+        with override_settings(DOWNLOAD_ORIGIN="https://dl.example.com"):
+            html = self.client.get("/").content.decode()
+        self.assertIn(f'href="https://dl.example.com/export/excel/?batch={self.batch.pk}"', html)
+        self.assertIn(f'href="https://dl.example.com/export/zip/?batch={self.batch.pk}"', html)
+        html = self.client.get("/").content.decode()
+        self.assertIn(f'href="/export/zip/?batch={self.batch.pk}"', html)
+
     def test_no_batches_empty_state(self):
         Batch.objects.all().delete()
         self.client.force_login(self.staff)

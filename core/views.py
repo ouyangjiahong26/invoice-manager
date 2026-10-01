@@ -5,6 +5,7 @@ from io import BytesIO
 from itertools import groupby
 from types import SimpleNamespace
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.auth.models import User
@@ -115,6 +116,7 @@ def board(request):
         "payer_id": payer_id,
         "q": query,
         "status_choices": Item.STATUS_CHOICES,
+        "download_origin": settings.DOWNLOAD_ORIGIN,
     })
 
 

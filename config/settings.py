@@ -24,6 +24,12 @@ ALLOWED_HOSTS = [
 CSRF_TRUSTED_ORIGINS = [
     o.strip() for o in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()
 ]
+# 导出下载走独立子域（如 https://download.cislunarspace.cn），空 = 与页面同域
+DOWNLOAD_ORIGIN = os.environ.get("DJANGO_DOWNLOAD_ORIGIN", "").rstrip("/")
+# 页面域与下载域共享登录态：cookie 挂父域；空 = 默认仅当前域
+_cookie_domain = os.environ.get("DJANGO_COOKIE_DOMAIN", "")
+SESSION_COOKIE_DOMAIN = _cookie_domain or None
+CSRF_COOKIE_DOMAIN = _cookie_domain or None
 
 INSTALLED_APPS = [
     "django.contrib.admin",
