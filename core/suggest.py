@@ -40,6 +40,9 @@ def llm_merge_groups(by_id, groups, pending, unmatched):
     for group in vision.group_suggest(summaries):
         if any(rid in consumed for rid in group):
             continue
+        kinds = {by_id[rid].get("kind") for rid in group if rid in by_id}
+        if Attachment.KIND_INVOICE not in kinds or Attachment.KIND_PAYMENT not in kinds:
+            continue  # 缺发票或缺支付的组无法提交，退回未配对/单边发票组流程
         llm_groups.append(group)
         consumed.update(group)
     if not llm_groups:
@@ -54,7 +57,7 @@ def llm_merge_groups(by_id, groups, pending, unmatched):
 
 
 def pair_summary(record):
-    """LLM 配对用的记录摘要（含智能体扩展证据：发票号码、手写标注、文件名）。"""
+    """LLM 配对用的记录摘要（含智能体扩展证据：发票号码、手写标注、文件名、商品摘要）。"""
     amount = record.get("amount")
     return {
         "id": record["id"],
@@ -66,6 +69,7 @@ def pair_summary(record):
         "invoice_no": record.get("invoice_no") or "",
         "handwritten_notes": record.get("handwritten_notes") or "",
         "filename": record.get("filename") or "",
+        "items_summary": record.get("items_summary") or "",
     }
 
 

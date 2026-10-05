@@ -2,23 +2,28 @@
 
 纯函数模块：不调 LLM、不碰 Django ORM（Decimal 除外），可独立单测。
 输入 records：[{id, kind, amount, order_no, merchant_no, invoice_no, remark_order_no}]，
-kind ∈ invoice/payment/refund/unknown，amount 为 Decimal 或 None；多余键（如 items_summary）忽略。
-输出：{"groups": [[id, ...]], "pending": [[id, ...]], "unmatched": [{"id": id, "reason": 文案}]}。
+kind ∈ invoice/payment/refund/unknown，amount 为 Decimal/int/float/数字串（入口统一转
+Decimal，解析失败按 None）；多余键（如 items_summary）忽略。
 
 规则按序执行：
 1. 单号互证：发票备注单号 = 支付平台单号/商户单号 → 同组；同单号多张发票、多笔支付并入，
    一张发票命中多组支付时并为一组。同发票号码的多张发票视为重复拍摄并为一组。
 2. 退款挂组：退款单号命中任一支付的同名字段 → 挂入该支付所在组；挂不上单号时，金额与某唯一组
    的支付合计相等（容差 AMOUNT_TOLERANCE）→ 挂入；仍挂不上进 unmatched。
-3. 金额兜底：仅剩单边发票组与单边支付组时，总额相等且两侧各唯一候选 → 成组；任一侧多候选 →
+3. 金额兜底：单边发票组与单边支付组总额配平，含一笔支付对应多张发票的合付组合——发票侧组合
+   总额 = 支付侧总额；组合唯一（同一发票/支付不被多个匹配占用）→ 直接成组，否则连通后整体
    进 pending（待确认组，由用户在预览页手动并组）。
 4. 剩余进 unmatched：发票找不到支付、支付找不到发票、退款找不到支付、unknown 未能识别类型。
 """
 
-from decimal import Decimal
+from collections import Counter
+from decimal import Decimal, InvalidOperation
 
 # 与 validation.AMOUNT_TOLERANCE 同值；独立定义以保持本模块零 Django 依赖
 AMOUNT_TOLERANCE = Decimal("0.005")
+
+# 规则 3 发票侧组合枚举的组件数上限，超过只做单张对单笔比对，避免子集枚举爆炸
+MAX_SUBSET_ROOTS = 15
 
 KIND_INVOICE, KIND_PAYMENT, KIND_REFUND = "invoice", "payment", "refund"
 
@@ -31,6 +36,10 @@ REASON_UNKNOWN_KIND = "未能识别票据类型"
 def pair(records):
     """按规则 1-4 配对；返回 {"groups", "pending", "unmatched"}。"""
     records = [dict(record) for record in records]
+    for record in records:
+        amount = record.get("amount")
+        if amount is not None and not isinstance(amount, Decimal):
+            record["amount"] = _to_decimal(amount)
     union = _Union([record["id"] for record in records])
     invoices = [r for r in records if r.get("kind") == KIND_INVOICE]
     payments = [r for r in records if r.get("kind") == KIND_PAYMENT]
@@ -80,40 +89,42 @@ def pair(records):
             union.union(candidates[0], refund["id"])
     components = _components(records, union)
 
-    # 规则 3 金额兜底：单边发票组 ↔ 单边支付组，总额相等连边后按连通块判定
+    # 规则 3 金额兜底：单边发票组与单边支付组总额配平（含一笔支付对多张发票的合付）。
+    # 唯一匹配（发票组合、支付各不被其他匹配占用）直接并成一组；多候选连成连通块进 pending。
     invoice_only = {root: members for root, members in components.items()
                     if _has_kind(members, KIND_INVOICE) and not _has_kind(members, KIND_PAYMENT)}
     payment_only = {root: members for root, members in components.items()
                     if _has_kind(members, KIND_PAYMENT) and not _has_kind(members, KIND_INVOICE)}
+    matches = _amount_matches(invoice_only, payment_only)
+    iroot_use = Counter(iroot for iroots, _ in matches for iroot in iroots)
+    proot_use = Counter(proot for _, proot in matches)
     link = _Union(list(components))
-    for iroot, imembers in invoice_only.items():
-        itotal = _kind_total(imembers, KIND_INVOICE)
-        if itotal is None:
-            continue
-        for proot, pmembers in payment_only.items():
-            ptotal = _kind_total(pmembers, KIND_PAYMENT)
-            if ptotal is not None and abs(itotal - ptotal) <= AMOUNT_TOLERANCE:
+    for iroots, proot in matches:
+        if proot_use[proot] > 1 or any(iroot_use[iroot] > 1 for iroot in iroots):
+            for iroot in iroots:  # 多候选：连成连通块，交由下方整体判 pending
                 link.union(iroot, proot)
+        else:
+            for iroot in iroots:  # 唯一匹配：直接并组（含多张发票合付一笔支付）
+                union.union(iroot, proot)
+    components = _components(records, union)
 
-    # 已有发票+支付的组直接成组；金额连通块里两侧各唯一 → 成组，否则待确认
+    # 含发票+支付的连通块即成组（规则 1/2 组 + 规则 3 唯一匹配）；多候选连通块整体待确认
     groups = [
         _ids(members) for members in components.values()
         if _has_kind(members, KIND_INVOICE) and _has_kind(members, KIND_PAYMENT)
     ]
     pending = []
     clusters = {}
-    for root in components:
+    for root in list(invoice_only) + list(payment_only):
         clusters.setdefault(link.find(root), []).append(root)
     for roots in clusters.values():
         iroots = [root for root in roots if root in invoice_only]
         proots = [root for root in roots if root in payment_only]
         if not iroots or not proots:
             continue
-        members = [member for root in roots for member in components[root]]
-        if len(iroots) == 1 and len(proots) == 1:
-            groups.append(_ids(members))
-        else:
-            pending.append(_ids(members))
+        members = [member for root in roots
+                   for member in (invoice_only.get(root) or payment_only[root])]
+        pending.append(_ids(members))
 
     position = {record["id"]: index for index, record in enumerate(records)}
     groups.sort(key=lambda ids: min(position[i] for i in ids))
@@ -157,6 +168,50 @@ def _kind_total(members, kind):
     if not amounts or any(amount is None for amount in amounts):
         return None
     return sum(amounts, Decimal("0"))
+
+
+def _to_decimal(raw):
+    """金额统一转 Decimal；解析失败返回 None（原值不可信，等同缺金额）。"""
+    try:
+        return Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _amount_matches(invoice_only, payment_only):
+    """规则 3 的金额匹配全集：[(发票组件集合, 支付组件)]，总额相等（容差内）即一条。
+
+    发票侧组件数超过 MAX_SUBSET_ROOTS 时退化为单张发票对单笔支付，不枚举组合。
+    """
+    itotals = {root: _kind_total(members, KIND_INVOICE) for root, members in invoice_only.items()}
+    roots = [root for root, total in itotals.items() if total is not None]
+    multi = len(roots) <= MAX_SUBSET_ROOTS
+    matches = []
+    for proot, pmembers in payment_only.items():
+        ptotal = _kind_total(pmembers, KIND_PAYMENT)
+        if ptotal is None:
+            continue
+        matches.extend((subset, proot) for subset in _subsets_totaling(roots, itotals, ptotal, multi))
+    return matches
+
+
+def _subsets_totaling(roots, totals, target, multi):
+    """总额等于 target（容差内）的组件子集；multi=False 时只比单张。"""
+    result = [
+        frozenset({root}) for root in roots
+        if abs(totals[root] - target) <= AMOUNT_TOLERANCE
+    ]
+    if not multi:
+        return result
+
+    def walk(index, chosen, total):
+        if len(chosen) > 1 and abs(total - target) <= AMOUNT_TOLERANCE:
+            result.append(frozenset(chosen))
+        for i in range(index, len(roots)):
+            walk(i + 1, chosen + [roots[i]], total + totals[roots[i]])
+
+    walk(0, [], Decimal("0"))
+    return result
 
 
 def _ids(members):

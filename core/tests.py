@@ -764,6 +764,69 @@ class PairingTests(SimpleTestCase):
         self.assertEqual(result["groups"], [])
         self.assertEqual(result["unmatched"], [])
 
+    def test_amount_fallback_merges_combined_invoices(self):
+        """合付：多张发票合计与一笔支付总额相等 → 并成一组（一笔支付对应多张发票）。"""
+        result = pairing.pair([
+            self._record(0, "invoice", "161.00"),
+            self._record(1, "invoice", "254.94"),
+            self._record(2, "invoice", "81.16"),
+            self._record(3, "payment", "497.10"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1, 2, 3]])
+        self.assertEqual(result["pending"], [])
+        self.assertEqual(result["unmatched"], [])
+
+    def test_combined_invoices_with_amount_gap_left_to_llm(self):
+        """合付但发票合计与支付差额超容差：规则不并组，留给 LLM 兜底与人工确认。"""
+        result = pairing.pair([
+            self._record(0, "invoice", "161.00"),
+            self._record(1, "invoice", "254.94"),
+            self._record(2, "invoice", "81.16"),
+            self._record(3, "payment", "496.96"),
+        ])
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(result["pending"], [])
+        self.assertEqual(len(result["unmatched"]), 4)
+
+    def test_subset_ambiguity_goes_pending(self):
+        """组合多候选：单张 100 与 30+70 都配得上支付 100 → 整体待确认。"""
+        result = pairing.pair([
+            self._record(0, "invoice", "30"),
+            self._record(1, "invoice", "70"),
+            self._record(2, "invoice", "100"),
+            self._record(3, "payment", "100"),
+        ])
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(sorted(result["pending"]), [[0, 1, 2, 3]])
+        self.assertEqual(result["unmatched"], [])
+
+    def test_invoice_shared_by_two_payments_goes_pending(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "100"),
+            self._record(1, "payment", "100"),
+            self._record(2, "payment", "100"),
+        ])
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(sorted(result["pending"]), [[0, 1, 2]])
+
+    def test_float_amounts_are_normalized(self):
+        """金额混入识别原始 JSON 的 float：入口归一 Decimal，不炸并正常配平。"""
+        result = pairing.pair([
+            self._record(0, "invoice", 161.0),
+            self._record(1, "invoice", 254.94),
+            self._record(2, "invoice", 81.16),
+            self._record(3, "payment", 497.1),
+        ])
+        self.assertEqual(result["groups"], [[0, 1, 2, 3]])
+
+    def test_subset_enumeration_capped(self):
+        """发票侧组件超上限：退化为单张比对，不枚举组合（16 张 1 元发票对 2 元支付不并组）。"""
+        records = [self._record(i, "invoice", "1") for i in range(16)]
+        records.append(self._record(99, "payment", "2"))
+        result = pairing.pair(records)
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(result["pending"], [])
+
     def test_all_unmatched_carry_reasons(self):
         result = pairing.pair([
             self._record(0, "invoice", "10"),
@@ -1106,6 +1169,21 @@ class BatchPairViewTests(SubmissionTestCase):
         self.assertEqual(field_mock.call_args[0][0][0][0]["id"], 0)
         self.assertEqual(data["suggestions"]["suggestions"][0]["title"], "打印费")
 
+    def test_llm_group_without_payment_dropped(self):
+        """LLM 给出的纯发票组无法提交：丢弃，发票走单边发票组流程。"""
+        session_id, _ = self._stage([_png_upload("a.png"), _png_upload("b.png"), _png_upload("c.png")])
+        self.client.force_login(self.student)
+        with mock.patch("core.vision.group_suggest", return_value=[[0, 1]]):
+            response = self._post_pair(session_id, [
+                {"id": 0, "kind": "invoice", "amount": "30"},
+                {"id": 1, "kind": "invoice", "amount": "35"},
+                {"id": 2, "kind": "payment", "amount": "70"},
+            ])
+        data = response.json()
+        self.assertEqual(data["groups"], [])
+        self.assertEqual(sorted(data["solo"]), [[0], [1]])
+        self.assertEqual([entry["id"] for entry in data["unmatched"]], [2])
+
     def test_requires_login(self):
         response = self.client.post("/items/batch/pair/", "{}", content_type="application/json")
         self.assertEqual(response.status_code, 302)
@@ -1186,6 +1264,28 @@ class BatchAgentRoundTests(SubmissionTestCase):
         self.assertTrue(data["actions"])
         self.assertEqual(reread_mock.call_count, 2)  # 初始两条都未决，各重读一次
         self.assertEqual(reread_mock.call_args_list[0][0][1], "发票.png")
+
+    def test_reread_amount_correction_does_not_crash_repair(self):
+        """回归：重读修正支付金额为 float 时，第二轮配对曾因 Decimal+float 混算 500。"""
+        session_id, invoice_id, payment_id = self._stage_two()
+        invoice_reread = {"kind": "invoice", "invoice_amount": 30.0}
+        payment_reread = {"kind": "payment", "amount": 30.0, "order_no": "Z9"}
+        with mock.patch("core.vision.group_suggest", return_value=[]), \
+             mock.patch("core.vision.reread", side_effect=[invoice_reread, payment_reread]):
+            response = self.client.post(
+                "/items/batch/agent-round/",
+                json.dumps({"session_id": session_id, "records": [
+                    {"id": 0, "file_id": invoice_id, "kind": "invoice", "amount": "30",
+                     "filename": "发票.png"},
+                    {"id": 1, "file_id": payment_id, "kind": "payment", "amount": "999",
+                     "order_no": "Z9", "filename": "支付.png"},
+                ]}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["groups"], [[0, 1]])  # 修正后发票 30 = 支付 30，金额兜底成组
+        self.assertEqual(data["records"][1]["amount"], "30.0")
 
     def test_no_improvement_ends_with_done(self):
         session_id, invoice_id, payment_id = self._stage_two()

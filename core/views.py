@@ -618,6 +618,9 @@ def batch_agent_round(request):
             continue
         if updated.get("kind") == Attachment.KIND_INVOICE and updated.get("invoice_amount") is not None:
             updated["amount"] = updated["invoice_amount"]  # 发票口径金额统一存 amount
+        # 重读结果是原始 JSON（金额常为 float/数字串），先归一 Decimal 再入 records，
+        # 否则第二轮配对 Decimal 与 float 混算直接 500
+        updated["amount"] = decimal_or_none(updated.get("amount"))
         diffs = []
         for key in _AGENT_FIELDS:
             new = updated.get(key)
