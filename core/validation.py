@@ -15,7 +15,7 @@ from .models import Attachment
 # 截图 RGB 均值低于该阈值视为疑似深色模式
 DARK_MEAN_THRESHOLD = 80
 # 平台单号：支付宝订单号（20 开头，28 位，银联等银行渠道可到 32 位）/ 微信交易单号（4 开头，28 位）
-PLATFORM_ORDER_NO_RE = re.compile(r"^(20\d{26,30}|4\d{26})\Z")
+PLATFORM_ORDER_NO_RE = re.compile(r"^(20\d{26,30}|4\d{27})\Z")
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 AMOUNT_TOLERANCE = Decimal("0.005")
 

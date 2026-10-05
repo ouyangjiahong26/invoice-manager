@@ -461,6 +461,15 @@ class CheckItemTests(SubmissionTestCase):
         self._payment(item, order_no="20" + "1" * 31, amount=None)  # 33 位超出渠道上限
         self.assertIn("平台单号格式不符", check_item(item)[0])
 
+    def test_wechat_28_digit_order_no_passes(self):
+        """微信交易单号 4 开头 28 位（20261005 批次实测 4500000430202610037898012541），
+        正则曾写成 27 位导致所有微信支付误报。"""
+        item = self._item()
+        self._payment(item, order_no="4500000430202610037898012541")
+        self.assertEqual(check_item(item), [])
+        self._payment(item, order_no="4" + "1" * 26)  # 27 位不足微信单号长度
+        self.assertTrue(any("平台单号格式不符" in w for w in check_item(item)))
+
     def test_refund_net_amount_is_clean(self):
         item = self._item(actual_amount="179.00", invoice_amount="199.00")
         self._payment(item, amount="199.00")

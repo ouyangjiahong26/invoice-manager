@@ -459,7 +459,7 @@
   });
 
   function soloCount() {
-    return groups.filter(function (group) { return group.solo; }).length;
+    return groups.filter(isSolo).length;
   }
 
   function unresolvedLeft() {
@@ -617,6 +617,11 @@
     return group.members.filter(function (card) { return !ignored.has(card); });
   }
 
+  // 单边发票组语义动态化：手工加入支付记录后即不再是单边（实付款可编辑、按普通组校验）
+  function isSolo(group) {
+    return !!group.solo && !groupMembers(group).some(function (c) { return kindOf(c) === "payment"; });
+  }
+
   function groupSums(group) {
     var invoice = 0, paid = 0, refunded = 0;
     groupMembers(group).forEach(function (card) {
@@ -667,7 +672,7 @@
     var hasInvoice = members.some(function (c) { return kindOf(c) === "invoice"; });
     var hasPayment = members.some(function (c) { return kindOf(c) === "payment"; });
     var text = "发票合计 ¥" + sums.invoice.toFixed(2) + " · 支付−退款 ¥" + sums.net.toFixed(2);
-    if (group.solo) {
+    if (isSolo(group)) {
       text += "；单边发票组：缺支付记录，实付款按 0.00 提交，审核不通过后从看板补传支付记录";
       el.className = "reconcile warn";
     } else if (!hasInvoice || !hasPayment) {
@@ -690,7 +695,7 @@
     el.className = "group-card";
     var head = document.createElement("div");
     var headText = document.createElement("b");
-    headText.textContent = "组 " + (i + 1) + (group.solo ? "（单边发票组）" : "");
+    headText.textContent = "组 " + (i + 1) + (isSolo(group) ? "（单边发票组）" : "");
     head.appendChild(headText);
     el.appendChild(head);
 
@@ -710,8 +715,9 @@
 
     var fields = document.createElement("div");
     fields.className = "group-fields";
-    if (group.actual === undefined) group.actual = sums.net.toFixed(2);
-    if (group.invoice === undefined) group.invoice = sums.invoice.toFixed(2);
+    // 成员增减或卡片金额修改后重算合计预填；单边发票组净额为 0 同样适用
+    group.actual = sums.net.toFixed(2);
+    group.invoice = sums.invoice.toFixed(2);
     fields.appendChild(fieldInput("明细", "text", group.title, function (v) { group.title = v; }));
     var catLabel = document.createElement("label");
     catLabel.textContent = "类别";
@@ -735,7 +741,7 @@
     fields.appendChild(catLabel);
 
     var actualInput = fieldInput("实付款", "number", group.actual, function (v) { group.actual = v; });
-    if (group.solo) {
+    if (isSolo(group)) {
       actualInput.querySelector("input").value = "0.00";
       actualInput.querySelector("input").readOnly = true;
       actualInput.title = "单边发票组实付款固定 0.00";
@@ -875,7 +881,7 @@
     var members = groupMembers(group);
     var hasInvoice = members.some(function (c) { return kindOf(c) === "invoice"; });
     if (!hasInvoice) return false;
-    if (group.solo) {  // 单边发票组：实付款固定 0.00，只要求明细与类别
+    if (isSolo(group)) {  // 单边发票组：实付款固定 0.00，只要求明细与类别
       return !!(group.title || "").trim() && !!String(group.categoryId || "").trim();
     }
     var hasPayment = members.some(function (c) { return kindOf(c) === "payment"; });
