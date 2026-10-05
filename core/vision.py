@@ -47,26 +47,36 @@ REFUND_PROMPT = PAYMENT_PROMPT.replace(
     "这是一张退款凭证（支付宝或微信的退款记录或交易详情）。",
 ).replace("amount 为支付金额（元，数字）；", "amount 为退款金额（元，数字）；")
 
+SUPPORT_PROMPT = (
+    "这是一张报销证明材料（充值或余额消费流水、转账回单、订单或账单截图等佐证文件）。"
+    "只输出一个 JSON 对象，不要输出任何其他文字或代码围栏，格式："
+    '{"amount": 数字, "items_summary": "内容摘要（如：腾讯云充值 1096.50 元入余额）"}。'
+    "amount 为图面金额（元，数字），识别不出用 null；items_summary 简述这份材料证明什么。"
+)
+
 PROMPTS = {
     "invoice": INVOICE_PROMPT,
     "payment": PAYMENT_PROMPT,
     "refund": REFUND_PROMPT,
+    "support": SUPPORT_PROMPT,
 }
 
-DETECT_KINDS = ("invoice", "payment", "refund", "unknown")
+DETECT_KINDS = ("invoice", "payment", "refund", "support", "unknown")
 
 DETECT_PROMPT = (
-    "这是一张报销票据文件，可能是电子发票、支付凭证（支付宝或微信的支付记录、账单或交易详情）"
-    "或退款凭证（支付宝或微信的退款记录或交易详情）之一。先判断票据类型，再提取字段。"
+    "这是一张报销票据文件，可能是电子发票、支付凭证（支付宝或微信的支付记录、账单或交易详情）、"
+    "退款凭证（支付宝或微信的退款记录或交易详情）或证明材料（充值/余额消费流水、转账回单、"
+    "订单或账单截图等佐证文件）之一。先判断票据类型，再提取字段。"
     "只输出一个 JSON 对象，不要输出任何其他文字或代码围栏，格式："
-    '{"kind": "invoice|payment|refund|unknown", "invoice_amount": 数字, '
+    '{"kind": "invoice|payment|refund|support|unknown", "invoice_amount": 数字, '
     '"invoice_no": "发票号码", "remark_order_no": "发票备注区的订单号/单号", '
     '"buyer_name": "购买方名称", "buyer_id": "购买方纳税人识别号", '
     '"items_summary": "发票经营业务范围或商品服务内容摘要", "amount": 数字, '
     '"platform": "alipay|wechat|other|unknown", "order_no": "平台单号", '
     '"merchant_no": "商户单号", "handwritten_notes": "图面上的手写文字"}。'
-    "kind 为票据类型：invoice 发票 / payment 支付凭证 / refund 退款凭证，看不出类型用 unknown；"
-    "invoice_amount 为价税合计，amount 为支付或退款金额（元，数字）；"
+    "kind 为票据类型：invoice 发票 / payment 支付凭证 / refund 退款凭证 / support 证明材料"
+    "（流水、回单、账单等佐证，不是发票也不是支付凭证本身），看不出类型用 unknown；"
+    "invoice_amount 为价税合计，amount 为支付、退款或流水金额（元，数字）；"
     "order_no 指平台交易单号：支付宝订单号（20 开头，通常 28 位，银联等银行渠道可到 32 位）"
     "或微信交易单号（4 开头，共 28 位）；"
     "merchant_no 指商家订单号/商户单号（长度不定、可含字母）。"
@@ -93,7 +103,7 @@ def prefill(data, filename, kind):
     if not configured() or kind not in PROMPTS:
         return {}
     try:
-        if (filename or "").lower().endswith(".pdf"):
+        if _is_pdf(data, filename):
             return _prefill_pdf(data, kind, PROMPTS[kind])
         return _prefill_image(data, kind, PROMPTS[kind])
     except Exception:
@@ -106,7 +116,7 @@ def detect(data, filename):
     if not configured():
         return {}
     try:
-        if (filename or "").lower().endswith(".pdf"):
+        if _is_pdf(data, filename):
             return _prefill_pdf(data, "detect", DETECT_PROMPT)
         return _prefill_image(data, "detect", DETECT_PROMPT)
     except Exception:
@@ -126,12 +136,20 @@ def reread(data, filename, hints):
         "请逐字核对后输出修正结果。\n\n" + DETECT_PROMPT + "\n\n补充线索：\n" + hints
     )
     try:
-        if (filename or "").lower().endswith(".pdf"):
+        if _is_pdf(data, filename):
             return _prefill_pdf(data, "detect", prompt)
         return _prefill_image(data, "detect", prompt)
     except Exception:
         logger.exception("重读失败：%s", filename)
         return {}
+
+
+def _is_pdf(data, filename):
+    """按内容判 PDF：头部一段内有 %PDF- 魔数即算（腾讯云导出的发票文件名可能无后缀，
+    且头部带脏字节，仅按文件名分流会把 PDF 字节当图发给识别服务被拒收）。"""
+    if (filename or "").lower().endswith(".pdf"):
+        return True
+    return b"%PDF-" in data[:1024]
 
 
 def _prefill_image(data, kind, prompt):
@@ -299,6 +317,11 @@ def _parse_content(content, kind):
             "remark_order_no": _text(data.get("remark_order_no")),
             "buyer_name": _text(data.get("buyer_name")),
             "buyer_id": _text(data.get("buyer_id")),
+            "items_summary": _text(data.get("items_summary")),
+        }
+    if kind == "support":
+        return {
+            "amount": _parse_amount(data.get("amount")),
             "items_summary": _text(data.get("items_summary")),
         }
     platform = _text(data.get("platform")).lower()

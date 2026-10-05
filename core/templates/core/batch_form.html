@@ -9,9 +9,9 @@
   <div class="ai-summary" id="batch-summary">尚未上传文件</div>
   <form id="batch-csrf" hidden>{% csrf_token %}</form>
   <div class="attach-block">
-    <label for="batch-upload" style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">混合上传票据文件（发票 / 支付记录 / 退款记录）</label>
+    <label for="batch-upload" style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">混合上传票据文件（发票 / 支付记录 / 退款记录 / 证明材料）</label>
     <input type="file" id="batch-upload" multiple accept=".jpg,.jpeg,.png,.pdf">
-    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组；规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）；其余未配对文件不生成条目。</div>
+    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组；规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）。证明材料（充值/消费流水、回单等）不参与配对与金额合计，识别后在未配对区用"加入"挂到对应组；其余未配对文件不生成条目。</div>
   </div>
 
   <div class="attach-grid" id="file-cards"></div>
@@ -68,6 +68,7 @@
         <option value="invoice">发票</option>
         <option value="payment">支付记录</option>
         <option value="refund">退款记录</option>
+        <option value="support">证明材料</option>
       </select>
     </label>
     <label class="attach-field amount-label">金额（元）
@@ -121,8 +122,8 @@
 (function () {
   var uploadInput = document.getElementById("batch-upload");
   if (!uploadInput) return;  // 未配置识别服务时不初始化
-  var KIND_LABELS = {invoice: "发票", payment: "支付记录", refund: "退款记录", unknown: "未识别"};
-  var AMOUNT_LABELS = {invoice: "发票金额（元）", payment: "支付金额（元）", refund: "退款金额（元）", unknown: "金额（元）"};
+  var KIND_LABELS = {invoice: "发票", payment: "支付记录", refund: "退款记录", support: "证明材料", unknown: "未识别"};
+  var AMOUNT_LABELS = {invoice: "发票金额（元）", payment: "支付金额（元）", refund: "退款金额（元）", support: "流水金额（元，选填）", unknown: "金额（元）"};
   var AMOUNT_TOLERANCE = 0.005;  // 与 core/validation.py 的 AMOUNT_TOLERANCE 一致
   var FIELD_DEFS = {
     invoice: [
@@ -137,12 +138,14 @@
       {role: "order_no", label: "平台单号"},
       {role: "merchant_no", label: "商户单号"}
     ],
+    support: [],
     unknown: []
   };
   var RESULT_KEYS = {
     invoice: [["invoice_amount", "amount"], ["invoice_no", "invoice_no"], ["remark_order_no", "remark_order_no"]],
     payment: [["amount", "amount"], ["order_no", "order_no"], ["merchant_no", "merchant_no"]],
     refund: [["amount", "amount"], ["order_no", "order_no"], ["merchant_no", "merchant_no"]],
+    support: [["amount", "amount"]],
     unknown: []
   };
 
@@ -679,7 +682,7 @@
       text += "；缺少" + (hasInvoice ? "支付记录" : "发票") + "，不能提交";
       el.className = "reconcile warn";
     } else if (Math.abs(sums.invoice - sums.net) > AMOUNT_TOLERANCE) {
-      text += "；两侧金额不一致，请核对";
+      text += "；两侧金额不一致，请核对（小额优惠/抹零差异可照常提交）";
       el.className = "reconcile warn";
     } else {
       text += "；金额互证一致";
@@ -753,7 +756,13 @@
     var line = document.createElement("div");
     el.appendChild(line);
     group.lineEl = line;
+    var issues = document.createElement("div");
+    issues.className = "reconcile warn";
+    issues.hidden = true;
+    el.appendChild(issues);
+    group.issuesEl = issues;
     updateGroupLine(group);
+    updateGroupIssues(group, i);
     return el;
   }
 
@@ -877,29 +886,50 @@
     });
   }
 
-  function groupValid(group) {
+  // 组未满足提交条件的原因清单（行内提示与提交反馈共用；空数组即可提交）
+  function groupIssues(group) {
     var members = groupMembers(group);
-    var hasInvoice = members.some(function (c) { return kindOf(c) === "invoice"; });
-    if (!hasInvoice) return false;
-    if (isSolo(group)) {  // 单边发票组：实付款固定 0.00，只要求明细与类别
-      return !!(group.title || "").trim() && !!String(group.categoryId || "").trim();
-    }
-    var hasPayment = members.some(function (c) { return kindOf(c) === "payment"; });
-    return hasPayment
-      && !!(group.title || "").trim()
-      && !!String(group.categoryId || "").trim()
-      && !!(group.actual || "").trim() && !isNaN(parseFloat(group.actual));
+    var issues = [];
+    if (members.some(function (c) { return kindOf(c) === "unknown"; }))
+      issues.push("含未识别类型的文件，请先在上方卡片改对类型或移出");
+    if (!members.some(function (c) { return kindOf(c) === "invoice"; }))
+      issues.push("缺发票");
+    if (!isSolo(group) && !members.some(function (c) { return kindOf(c) === "payment"; }))
+      issues.push("缺支付记录");
+    if (!(group.title || "").trim()) issues.push("缺明细");
+    if (!String(group.categoryId || "").trim()) issues.push("缺类别");
+    if (!isSolo(group) && (!(group.actual || "").trim() || isNaN(parseFloat(group.actual))))
+      issues.push("缺实付款");
+    return issues;
+  }
+
+  function groupValid(group) {
+    return groupIssues(group).length === 0;
+  }
+
+  // 组内红字提示：随明细/类别/实付款输入实时刷新（renderSubmit 时机）
+  function updateGroupIssues(group, index) {
+    var el = group.issuesEl;
+    if (!el) return;
+    var issues = groupIssues(group);
+    el.hidden = !issues.length;
+    el.textContent = issues.length ? "组 " + (index + 1) + " 待补：" + issues.join("；") : "";
   }
 
   function renderSubmit() {
-    groups.forEach(updateGroupLine);
     var button = document.getElementById("submit-button");
+    groups.forEach(function (group, i) {
+      updateGroupLine(group);
+      updateGroupIssues(group, i);
+    });
     var invalid = groups.filter(function (group) { return !groupValid(group); }).length;
     var soloN = soloCount();
     button.textContent = "提交 " + groups.length + " 条"
       + (soloN ? "（含 " + soloN + " 条单边发票）" : "");
-    button.disabled = !groups.length || invalid > 0;
-    button.title = invalid ? "有 " + invalid + " 个组未满足提交条件（缺发票，或缺明细/类别/实付款）" : "";
+    // 不用 disabled 拦截点击：点了要明确告诉用户还缺什么（hover title 看不见的问题反馈）
+    button.disabled = false;
+    button.classList.toggle("secondary", invalid > 0 || !groups.length);
+    button.title = invalid ? "有 " + invalid + " 个组待补信息，点击查看明细" : "";
   }
 
   function renderGroups() {
@@ -921,6 +951,27 @@
 
   document.getElementById("submit-button").addEventListener("click", function () {
     if (this.disabled) return;
+    if (!groups.length) {
+      showError("没有可提交的组：请从待确认组设为新组，或从未配对区新建组。");
+      return;
+    }
+    // 点了不满足条件就明确说出每组缺什么，并定位到第一个问题组（不再只靠 hover title）
+    var problems = [];
+    groups.forEach(function (group, i) {
+      var issues = groupIssues(group);
+      if (issues.length) problems.push("组 " + (i + 1) + "：" + issues.join("；"));
+    });
+    if (problems.length) {
+      showError("还有 " + problems.length + " 个组待补——" + problems.join("；") + "。");
+      var first = groups.findIndex(function (group) { return !groupValid(group); });
+      var card = document.querySelectorAll("#group-list .group-card")[first];
+      if (card) {
+        card.scrollIntoView({behavior: "smooth", block: "center"});
+        card.style.boxShadow = "0 0 0 3px #ff8182";
+        setTimeout(function () { card.style.boxShadow = ""; }, 1600);
+      }
+      return;
+    }
     var button = this;
     button.disabled = true;
     button.textContent = "提交中…";

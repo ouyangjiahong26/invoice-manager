@@ -103,7 +103,7 @@
         <td class="cell-payer{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="payer">{{ row.item.payer_name }}</td>
         <td class="cell-status{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="status"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
         <td class="attach-count"
-            title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}</td>
+            title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}{% if row.counts.support %} · 证明 {{ row.counts.support }}{% endif %}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}{% if row.counts.support %}/{{ row.counts.support }}{% endif %}</td>
         <td>{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
       </tr>
       {% empty %}
@@ -467,6 +467,12 @@
         {role: "merchant_no", label: "商户单号", type: "text"}
       ],
       suggestions: [{role: "amount", key: "amount"}, {role: "order_no", key: "order_no"}, {role: "merchant_no", key: "merchant_no"}]
+    },
+    support: {
+      prefix: "new_support", fields: [
+        {role: "amount", label: "流水金额（选填）", type: "number"}
+      ],
+      suggestions: [{role: "amount", key: "amount"}]
     }
   };
   // 与 core/validation.py 的 PLATFORM_ORDER_NO_RE 保持一致（微信交易单号 4 开头 28 位：4\d{27}）

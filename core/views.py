@@ -37,6 +37,7 @@ UPLOAD_FIELDS = (
     ("invoices", "new_invoice", Attachment.KIND_INVOICE),
     ("payments", "new_payment", Attachment.KIND_PAYMENT),
     ("refunds", "new_refund", Attachment.KIND_REFUND),
+    ("supports", "new_support", Attachment.KIND_SUPPORT),
 )
 
 
@@ -73,7 +74,7 @@ def board(request):
         )
         seq = 0
         for item in items:
-            counts = {"invoice": 0, "payment": 0, "refund": 0}
+            counts = {"invoice": 0, "payment": 0, "refund": 0, "support": 0}
             for attachment in item.attachments.all():
                 if attachment.kind in counts:
                     counts[attachment.kind] += 1

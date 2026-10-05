@@ -105,13 +105,16 @@ class Item(models.Model):
 
 
 class Attachment(models.Model):
-    """条目下的单个票据文件：发票 / 支付记录 / 退款记录，一条目可有多张。"""
+    """条目下的单个票据文件：发票 / 支付记录 / 退款记录 / 证明材料，一条目可有多张。"""
 
-    KIND_INVOICE, KIND_PAYMENT, KIND_REFUND = "invoice", "payment", "refund"
+    KIND_INVOICE, KIND_PAYMENT, KIND_REFUND, KIND_SUPPORT = (
+        "invoice", "payment", "refund", "support",
+    )
     KIND_CHOICES = [
         (KIND_INVOICE, "发票"),
         (KIND_PAYMENT, "支付记录"),
         (KIND_REFUND, "退款记录"),
+        (KIND_SUPPORT, "证明材料"),
     ]
 
     item = models.ForeignKey(

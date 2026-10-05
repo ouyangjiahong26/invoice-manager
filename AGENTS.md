@@ -9,19 +9,19 @@ Django 6.1 项目，项目配置包 `config`，唯一 app `core`，全函数视�
 ```
 浏览器 ──注册/登录──> core.views（函数视图）
   │                     ├─ board：按批次展示表格视图（序号=导出序号；?batch=&status=&category=&payer=&q= 筛选）
-  │                     ├─ item_create/item_update/item_panel：侧边栏新建/编辑（ItemPanelForm + 多附件上传 invoices/payments/refunds）
+  │                     ├─ item_create/item_update/item_panel：侧边栏新建/编辑（ItemPanelForm + 多附件上传 invoices/payments/refunds/supports）
   │                     ├─ item_field_update/item_reorder/batch_add：表格行内单字段保存 / staff 类别内拖拽调序 / staff 建批
   │                     ├─ attachment_update/attachment_delete：已保存附件行内编辑/删除
   │                     ├─ file_serve：/items/attachments/<pk>/file/ 鉴权下发（ADR-0002）
-  │                     ├─ prefill：附件文件 → DeepSeek 识别 → JSON 回填（无状态）
-  │                     ├─ 批量配对 /items/batch/：stage 暂存上传 → detect 逐张识别 → pair 规则配对 → agent-round 配对智能体多轮定向重读（ADR-0008）→ submit 按组建条目；单边发票组可提交（实付 0.00）
+  │                     ├─ prefill：附件文件 → DeepSeek 识别 → JSON 回填（无状态）；PDF/图片按内容魔数分流（ADR-0011）
+  │                     ├─ 批量配对 /items/batch/：stage 暂存上传 → detect 逐张识别 → pair 规则配对 → agent-round 配对智能体多轮定向重读（ADR-0008）→ submit 按组建条目；单边发票组可提交（实付 0.00）；证明材料（support）不参与配对，手动加入组（ADR-0011）
   │                     └─ export_excel/export_zip（staff only）：按批次导出 approved 条目；zip 附件盖票据标注（每页导出序号、第一张发票附件首页写平台单号、图片转 PDF，见 core/stamping.py 与 CONTEXT.md）
   └─ /admin/：条目审核（改 status）、类别/批次管理（含 description 参考说明）
 core.validation.check_item：五条警告规则（附件合计、实付>发票、平台单号、深色支付记录、抬头/税号），保存后共用，不阻断
 ```
 
 关键约定：
-- 条目下可有多个 `Attachment`（kind ∈ invoice/payment/refund），金额与号码（平台单号/商户单号/发票号码）挂在附件上，见 ADR-0005。
+- 条目下可有多个 `Attachment`（kind ∈ invoice/payment/refund/support；support=证明材料，不参与金额与配对，ADR-0011），金额与号码（平台单号/商户单号/发票号码）挂在附件上，见 ADR-0005。
 - 条目必填归属报销批次（Batch），学生提交自动归最新批，导出按批；条目顺序 `position` 持久化，导出序号 = 按（类别顺序、position、id）排当前批次全量条目后的 1..N；staff 拖拽调序限类别内，行内改类别自动归尾，调序与 position 变化不留痕（ADR-0007）。
 - 实付款 = 支付记录合计 − 退款记录合计；发票金额 = 发票附件合计；页面自动回填、服务端 `check_item` 核对一致性。
 - 媒体文件（发票/支付记录）**不经 nginx**，全部走 `file_serve` 鉴权路由（ADR-0002）。

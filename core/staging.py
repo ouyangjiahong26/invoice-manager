@@ -26,7 +26,15 @@ def _root():
 
 def _safe_name(name):
     cleaned = _SAFE_NAME.sub("_", Path(name or "").name).strip("._") or "file"
-    return cleaned[:80]
+    if len(cleaned) > 80:
+        # 超长截断时保留扩展名：丢了后缀会让识别按文件名错走图片路径
+        # （腾讯云发票文件名超 80 字符，实测截掉 .pdf 后 PDF 被当图发给识别服务拒收）
+        stem, dot, suffix = cleaned.rpartition(".")
+        if dot and 0 < len(suffix) <= 10 and suffix.isalnum():
+            cleaned = (cleaned[:79 - len(suffix)].rstrip("._") or "file") + "." + suffix
+        else:
+            cleaned = cleaned[:80]
+    return cleaned
 
 
 def sweep():

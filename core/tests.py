@@ -22,7 +22,7 @@ from openpyxl import load_workbook
 
 import pymupdf
 
-from . import pairing, stamping, vision
+from . import pairing, staging, stamping, vision
 from .audit import ActorMiddleware
 from .models import Attachment, AuditLog, Batch, Category, Item
 from .validation import check_item
@@ -122,6 +122,27 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         self.assertEqual(str(first.amount), "67.70")
         self.assertEqual(first.ocr_data, {"buyer_name": "清华大学"})
         self.assertEqual(item.attachments.get(kind=Attachment.KIND_PAYMENT).order_no, ALIPAY_ORDER_NO)
+
+    def test_create_support_upload(self):
+        """侧边栏"证明材料"上传块：supports 文件 + new_support 前缀字段。"""
+        self.client.force_login(self.student)
+        data = _item_data(
+            category=self.category.pk,
+            actual_amount="656.13",
+            invoice_amount="656.13",
+            invoices=[_png_upload("inv.pdf")],
+            payments=[_png_upload("pay.pdf")],
+        )
+        data["supports"] = [_png_upload("flow.pdf")]
+        data["new_invoice_0_amount"] = "656.13"
+        data["new_payment_0_amount"] = "1096.50"
+        data["new_payment_0_order_no"] = ALIPAY_ORDER_NO
+        data["new_support_0_amount"] = "1096.50"
+        response = self.client.post("/items/new/", data)
+        self.assertRedirects(response, "/")
+        item = Item.objects.latest("id")
+        support = item.attachments.get(kind=Attachment.KIND_SUPPORT)
+        self.assertEqual(str(support.amount), "1096.50")
 
     def test_create_warns_on_amount_mismatch(self):
         self.client.force_login(self.student)
@@ -836,6 +857,17 @@ class PairingTests(SimpleTestCase):
         self.assertEqual(result["groups"], [])
         self.assertEqual(result["pending"], [])
 
+    def test_support_record_goes_unmatched_with_hint(self):
+        result = pairing.pair([
+            self._record(0, "invoice", "100", remark_order_no="X1"),
+            self._record(1, "payment", "100", order_no="X1"),
+            self._record(2, "support", "1096.50"),
+        ])
+        self.assertEqual(result["groups"], [[0, 1]])
+        self.assertEqual(result["unmatched"], [
+            {"id": 2, "reason": "证明材料不参与自动配对，请加入对应组"},
+        ])
+
     def test_all_unmatched_carry_reasons(self):
         result = pairing.pair([
             self._record(0, "invoice", "10"),
@@ -898,6 +930,29 @@ class VisionDetectTests(SimpleTestCase):
                 self.assertEqual(vision.detect(PNG_1X1, "p.png"), {})
         self.assertFalse(post.called)
 
+    def test_detect_routes_by_pdf_magic_without_extension(self):
+        """腾讯云发票文件名超长被截断丢 .pdf 后缀、头部带脏字节：按 %PDF- 魔数走文本路径。"""
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((36, 60), "腾讯云发票 发票金额 505.27元 发票号码 26117000001528347626 " * 2)
+        data = b"0okok" + doc.tobytes()  # 复刻线上脏头
+        content = json.dumps({
+            "kind": "invoice", "invoice_amount": 505.27, "invoice_no": "26117000001528347626",
+            "remark_order_no": "", "buyer_name": "", "buyer_id": "",
+            "items_summary": "腾讯云 轻量应用服务器", "amount": None,
+            "platform": "unknown", "order_no": "", "merchant_no": "",
+        })
+        with mock.patch("core.vision._post", return_value=self._response(content)) as post:
+            result = vision.detect(data, "100007654041_QCLOUD_qcloud_invoice_6ac3259edb9a917911740")
+        self.assertTrue(post.called)
+        self.assertEqual(result["kind"], "invoice")
+        self.assertEqual(result["invoice_amount"], 505.27)
+        self.assertEqual(result["_source"], "text")  # 文本充足，不再把 PDF 字节当图发
+        # 头部无 %PDF- 的图片仍走图片路径
+        with mock.patch("core.vision._post", return_value=self._response(content)) as post:
+            vision.detect(PNG_1X1, "photo")
+        self.assertIn("image_url", json.dumps(post.call_args[0][0]["messages"][0]["content"]))
+
     def test_group_suggest_filters_unknown_ids_and_short_groups(self):
         content = json.dumps({"groups": [[7, 8, 99], ["bad"], [9]]})
         records = [
@@ -930,6 +985,22 @@ class VisionDetectTests(SimpleTestCase):
         self.assertEqual(len(result["suggestions"]), len(groups))  # 模型少给时补 None 与组等长
         self.assertEqual(result["suggestions"][0], {"title": "打印费", "category_id": 1})
         self.assertIsNone(result["suggestions"][1])
+
+
+class StagingSafeNameTests(SimpleTestCase):
+    def test_long_name_keeps_extension(self):
+        """超长文件名截断保留扩展名：丢后缀会让识别按文件名错走图片路径。"""
+        long_pdf = "100007654041_QCLOUD_E02EA992120261050519147_qcloud_invoice_6ac3259edb9a91791174" + "0123456789" * 5 + ".pdf"
+        name = staging._safe_name(long_pdf)
+        self.assertLessEqual(len(name), 80)
+        self.assertTrue(name.endswith(".pdf"))
+
+    def test_short_names_unchanged(self):
+        self.assertEqual(staging._safe_name("发票 2026.pdf"), "发票_2026.pdf")
+        self.assertEqual(staging._safe_name(""), "file")
+        no_suffix = staging._safe_name("q" * 100)
+        self.assertEqual(len(no_suffix), 80)
+        self.assertFalse(no_suffix.endswith(".pdf"))
 
 
 
@@ -1016,6 +1087,34 @@ class BatchSubmitTests(SubmissionTestCase):
         self.assertEqual(invoice.ocr_data, {"buyer_name": "清华大学"})
         log = AuditLog.objects.get(action="create", item_pk=item.pk)
         self.assertEqual(len(log.snapshot["attachments"]), 3)
+
+    def test_submit_support_file_attached_without_amount_effects(self):
+        """证明材料随组提交：附件落库但不参与金额（腾讯云充值流水场景）。"""
+        session_id, file_ids = self._stage([
+            _png_upload("invoice.png"), _png_upload("payment.png"), _png_upload("flow.png"),
+        ])
+        self.client.force_login(self.student)
+        response = self._post_batch(session_id, [
+            {
+                "title": "腾讯云服务器", "category": self.category.pk,
+                "actual_amount": "656.13", "invoice_amount": "656.13",
+                "files": [
+                    {"file_id": file_ids[0], "kind": "invoice", "amount": "656.13",
+                     "invoice_no": "INV-QC"},
+                    {"file_id": file_ids[1], "kind": "payment", "amount": "1096.50",
+                     "order_no": ALIPAY_ORDER_NO},
+                    {"file_id": file_ids[2], "kind": "support", "amount": "1096.50",
+                     "ocr": {"items_summary": "腾讯云充值 1096.50 元入余额"}},
+                ],
+            },
+        ])
+        self.assertRedirects(response, "/")
+        item = Item.objects.get(title="腾讯云服务器")
+        kinds = {a.kind: a.amount for a in item.attachments.all()}
+        self.assertEqual(kinds["support"], Decimal("1096.50"))
+        # 证明材料不参与净额核对：支付 1096.50 对实付 656.13 只有一条金额警告
+        warnings = [w for w in check_item(item) if "实付款不一致" in w]
+        self.assertEqual(len(warnings), 1)
 
     def test_session_cleared_after_submit(self):
         session_id, file_ids = self._stage(

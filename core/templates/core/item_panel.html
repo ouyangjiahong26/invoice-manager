@@ -55,6 +55,13 @@
     <div class="attach-grid" id="panel-cards-refund"></div>
   </details>
 
+  <details class="attach-block">
+    <summary>证明材料（流水/回单等佐证）？点击展开</summary>
+    <input type="file" id="panel-upload-support" name="supports" data-kind="support" multiple
+           accept=".jpg,.jpeg,.png,.pdf">
+    <div class="attach-grid" id="panel-cards-support"></div>
+  </details>
+
   <div class="reconcile" id="panel-reconcile"></div>
 
   <div>
@@ -108,6 +115,8 @@
                     <label>发票号码
                       <input type="text" name="invoice_no" data-role="invoice_no" value="{{ row.invoice_no }}">
                     </label>
+                  {% elif kind == 'support' %}
+                    {# 证明材料只需金额，无单号字段 #}
                   {% else %}
                     <label>平台单号
                       <input type="text" name="order_no" data-role="order_no" value="{{ row.order_no }}">

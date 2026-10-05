@@ -30,6 +30,7 @@ KIND_INVOICE, KIND_PAYMENT, KIND_REFUND = "invoice", "payment", "refund"
 REASON_NO_PAYMENT = "找不到对应支付记录"
 REASON_NO_INVOICE = "找不到对应发票"
 REASON_REFUND_NO_PAYMENT = "退款记录找不到对应支付记录"
+REASON_SUPPORT = "证明材料不参与自动配对，请加入对应组"
 REASON_UNKNOWN_KIND = "未能识别票据类型"
 
 
@@ -144,6 +145,8 @@ def pair(records):
         elif kind == KIND_REFUND:
             members = components[union.find(rid)]
             reason = REASON_NO_INVOICE if _has_kind(members, KIND_PAYMENT) else REASON_REFUND_NO_PAYMENT
+        elif kind == "support":
+            reason = REASON_SUPPORT
         else:
             reason = REASON_UNKNOWN_KIND
         unmatched.append({"id": rid, "reason": reason})
