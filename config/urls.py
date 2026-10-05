@@ -5,6 +5,8 @@ from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import include, path, re_path
 
+from core import views as core_views
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path(
@@ -13,6 +15,7 @@ urlpatterns = [
         name="login",
     ),
     path("accounts/logout/", auth_views.LogoutView.as_view(), name="logout"),
+    path("accounts/session-check/", core_views.session_check, name="session-check"),
     path("", include("core.urls")),
 ]
 
