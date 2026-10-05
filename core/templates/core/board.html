@@ -469,7 +469,8 @@
       suggestions: [{role: "amount", key: "amount"}, {role: "order_no", key: "order_no"}, {role: "merchant_no", key: "merchant_no"}]
     }
   };
-  var ORDER_NO_RE = /^(20\d{26,30}|4\d{26})$/;
+  // 与 core/validation.py 的 PLATFORM_ORDER_NO_RE 保持一致（微信交易单号 4 开头 28 位：4\d{27}）
+  var ORDER_NO_RE = /^(20\d{26,30}|4\d{27})$/;
   var TOLERANCE = 0.005;
   var manualMatch = false;
 
