@@ -33,6 +33,14 @@ class ItemPanelForm(forms.ModelForm):
         if not staff:
             del self.fields["status"]
             del self.fields["owner"]
+        else:
+            self.fields["review_comment"] = forms.CharField(
+                label="审核批语",
+                max_length=200,
+                required=False,
+                widget=forms.Textarea(attrs={"rows": 3}),
+                help_text="学生可见。改状态时必填，没改状态请留空",
+            )
 
 
 class AttachmentForm(forms.ModelForm):

@@ -23,7 +23,7 @@
     .badge.approved { color: #116329; border-color: #4ac26b; background: #dafbe1; }
     .badge.rejected { color: #a40e26; border-color: #ff8182; background: #ffebe9; }
     form.stack label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
-    form.stack input, form.stack select { width: 100%; max-width: 420px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; }
+    form.stack input, form.stack select, form.stack textarea { width: 100%; max-width: 420px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; }
     form.stack .helptext { font-size: 12px; color: #57606a; margin-top: 2px; }
     .errorlist { color: #a40e26; font-size: 13px; list-style: none; padding: 0; margin: 4px 0 0; }
     button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; font-size: 14px; cursor: pointer; margin-top: 16px; }
@@ -103,6 +103,9 @@
     .panel-head .panel-close { margin-top: 0; }
     .panel-warnings { background: #fff8c5; border: 1px solid #d4a72c; color: #7d4e00; border-radius: 6px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
     .panel-warnings div { margin-top: 2px; }
+    .panel-review { background: #ddf4ff; border: 1px solid #54aeff66; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; color: #0a3069; }
+    .panel-review .review-text { white-space: pre-wrap; }
+    .panel-review .review-meta { color: #57606a; font-size: 12px; margin-top: 2px; }
     .panel-readonly { margin-bottom: 8px; }
     table.panel-fields { border-collapse: collapse; font-size: 14px; width: 100%; }
     table.panel-fields th { text-align: left; color: #57606a; font-weight: 600; padding: 6px 12px 6px 0; width: 80px; font-size: 13px; vertical-align: top; }
@@ -112,7 +115,17 @@
     table.panel-audit { border-collapse: collapse; font-size: 12px; width: 100%; }
     table.panel-audit th, table.panel-audit td { border: 1px solid #d0d7de; padding: 5px 8px; text-align: left; vertical-align: top; }
     table.panel-audit th { background: #f6f8fa; }
+    table.panel-audit td { white-space: pre-wrap; }
     #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1f2328; color: #fff; padding: 10px 18px; border-radius: 6px; font-size: 13px; z-index: 60; max-width: 80vw; }
+    #review-modal { position: fixed; inset: 0; background: rgba(31, 35, 40, 0.45); z-index: 70; display: flex; align-items: center; justify-content: center; }
+    #review-modal[hidden] { display: none; }
+    #review-modal form { background: #fff; border-radius: 8px; padding: 16px 20px; width: min(420px, 92vw); }
+    #review-modal h3 { margin: 0 0 6px; font-size: 15px; }
+    #review-modal .review-context { color: #57606a; font-size: 13px; margin-bottom: 8px; }
+    #review-modal textarea { width: 100%; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; resize: vertical; }
+    #review-modal .review-error { color: #a40e26; font-size: 13px; margin-top: 6px; }
+    #review-modal .review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+    #review-modal button { margin-top: 0; }
   </style>
 </head>
 <body>

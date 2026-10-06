@@ -72,6 +72,11 @@ def mark_attachments(item, after, before):
     item._audit_attachments_before = before
 
 
+def mark_comment(item, comment):
+    """视图在保存前注入审核批语，供下一次 Item.save() 的留痕携带。"""
+    item._audit_comment = comment
+
+
 def format_attachments(value):
     """把附件快照渲染成一行文本。value 为列表（终值）或字符串（由旧值改为新值的 diff）。"""
     if isinstance(value, str):
@@ -129,7 +134,7 @@ def _snapshot(item):
     return data
 
 
-def _log(item_pk, action, snapshot, item=None):
+def _log(item_pk, action, snapshot, item=None, comment=""):
     actor = current_actor()
     AuditLog.objects.create(
         item=item,
@@ -138,6 +143,7 @@ def _log(item_pk, action, snapshot, item=None):
         actor=actor,
         actor_name=(actor.get_full_name() or actor.username) if actor else "",
         snapshot=snapshot,
+        comment=comment,
     )
 
 
@@ -157,8 +163,10 @@ def _pre_save_item(sender, instance, **kwargs):
 
 def _post_save_item(sender, instance, created, **kwargs):
     current = _snapshot(instance)
+    comment = getattr(instance, "_audit_comment", "")
+    instance.__dict__.pop("_audit_comment", None)
     if created:
-        _log(instance.pk, AuditLog.ACTION_CREATE, current, item=instance)
+        _log(instance.pk, AuditLog.ACTION_CREATE, current, item=instance, comment=comment)
         return
     old = getattr(instance, "_audit_old", None)
     if old is None:
@@ -172,7 +180,7 @@ def _post_save_item(sender, instance, created, **kwargs):
         elif old[field] != current[field]:
             diff[field] = [old[field], current[field]]
     if diff:
-        _log(instance.pk, AuditLog.ACTION_UPDATE, diff, item=instance)
+        _log(instance.pk, AuditLog.ACTION_UPDATE, diff, item=instance, comment=comment)
 
 
 def _post_delete_item(sender, instance, **kwargs):

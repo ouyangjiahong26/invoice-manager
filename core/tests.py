@@ -733,10 +733,32 @@ class ItemDetailTests(SubmissionTestCase):
         self.assertContains(response, 'id="panel-form"')
         self.assertNotContains(response, 'name="status"')
         self.assertNotContains(response, 'name="owner"')
+        self.assertNotContains(response, 'name="review_comment"')
         self.client.force_login(self.staff)
         response = self.client.get(panel_url)
         self.assertContains(response, 'name="status"')
         self.assertContains(response, 'name="owner"')
+        self.assertContains(response, 'name="review_comment"')
+
+    def test_panel_shows_latest_review_comment(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "status", "value": "rejected", "comment": "抬头不对，请换开"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.client.force_login(self.student_b)  # 条目侧边栏共享可见
+        response = self.client.get(f"/items/{item.pk}/panel/")
+        self.assertContains(response, "批语：抬头不对，请换开")
+        self.assertContains(response, "管理员 · ")
+        self.assertContains(response, "由 待审核 改为 已退回")
+
+    def test_panel_has_no_review_block_without_comment(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.student)
+        self.assertNotContains(self.client.get(f"/items/{item.pk}/panel/"), "批语：")
 
     def test_panel_requires_login(self):
         item = self._create_item(self.student)
@@ -1571,11 +1593,14 @@ class BoardTableTests(SubmissionTestCase):
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class ItemFieldUpdateTests(SubmissionTestCase):
-    def _post_field(self, item, field, value, as_user=None):
+    def _post_field(self, item, field, value, as_user=None, comment=None):
+        payload = {"field": field, "value": value}
+        if comment is not None:
+            payload["comment"] = comment
         self.client.force_login(as_user or self.student)
         return self.client.post(
             f"/items/{item.pk}/field/",
-            json.dumps({"field": field, "value": value}),
+            json.dumps(payload),
             content_type="application/json",
         )
 
@@ -1601,15 +1626,60 @@ class ItemFieldUpdateTests(SubmissionTestCase):
 
     def test_staff_changes_status_and_owner_with_audit(self):
         item = self._create_item(self.student)
-        response = self._post_field(item, "status", "approved", as_user=self.staff)
+        response = self._post_field(item, "status", "approved", as_user=self.staff, comment="已核对，实付一致")
         self.assertEqual(response.status_code, 200)
         response = self._post_field(item, "owner", self.student_b.pk, as_user=self.staff)
         self.assertEqual(response.status_code, 200)
         item.refresh_from_db()
         self.assertEqual(item.status, Item.STATUS_APPROVED)
         self.assertEqual(item.owner, self.student_b)
+        status_log = AuditLog.objects.get(action="update", item=item, comment="已核对，实付一致")
+        self.assertEqual(status_log.snapshot, {"status": ["pending", "approved"]})
+        self.assertEqual(status_log.actor, self.staff)
+        owner_log = AuditLog.objects.filter(action="update").latest("id")
+        self.assertEqual(owner_log.snapshot, {"owner": ["张三", "李四"]})
+        self.assertEqual(owner_log.comment, "")
+
+    def test_status_change_requires_comment(self):
+        item = self._create_item(self.student)
+        before = AuditLog.objects.count()
+        response = self._post_field(item, "status", "rejected", as_user=self.staff)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("审核批语", response.json()["error"])
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_PENDING)
+        self.assertEqual(AuditLog.objects.count(), before)
+
+    def test_status_change_rejects_non_string_comment(self):
+        item = self._create_item(self.student)
+        response = self._post_field(item, "status", "approved", as_user=self.staff, comment=123)
+        self.assertEqual(response.status_code, 400)
+
+    def test_status_comment_capped_at_200(self):
+        item = self._create_item(self.student)
+        response = self._post_field(item, "status", "approved", as_user=self.staff, comment="长" * 201)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("200", response.json()["error"])
+
+    def test_status_change_same_value_with_comment_rejected(self):
+        item = self._create_item(self.student)
+        response = self._post_field(item, "status", "pending", as_user=self.staff, comment="写错地方了")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("留空", response.json()["error"])
+
+    def test_status_change_stores_comment_and_chinese_display(self):
+        item = self._create_item(self.student)
+        response = self._post_field(
+            item, "status", "rejected", as_user=self.staff, comment="发票抬头不是清华，请换开"
+        )
+        self.assertEqual(response.status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_REJECTED)
         log = AuditLog.objects.filter(action="update").latest("id")
-        self.assertEqual(log.snapshot, {"owner": ["张三", "李四"]})
+        self.assertEqual(log.actor, self.staff)
+        self.assertEqual(log.comment, "发票抬头不是清华，请换开")
+        self.assertIn(("状态", "由 待审核 改为 已退回"), log.detail_rows())
+        self.assertIn(("批语", "发票抬头不是清华，请换开"), log.detail_rows())
 
     def test_category_change_appends_to_end(self):
         other_category = Category.objects.create(name="其他类别", order=5)
@@ -1629,6 +1699,81 @@ class ItemFieldUpdateTests(SubmissionTestCase):
                 self.assertEqual(response.status_code, 400)
         item.refresh_from_db()
         self.assertEqual(str(item.actual_amount), "100.00")
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ReviewCommentTests(SubmissionTestCase):
+    """审核批语的侧边栏与新建入口（看板行内入口见 ItemFieldUpdateTests）。"""
+
+    def _panel_data(self, item, **overrides):
+        data = {
+            "title": item.title,
+            "category": item.category.pk,
+            "actual_amount": str(item.actual_amount),
+            "invoice_amount": str(item.invoice_amount or ""),
+            "status": item.status,
+            "owner": item.owner.pk,
+        }
+        data.update(overrides)
+        return data
+
+    def test_panel_status_change_requires_comment(self):
+        item = self._create_item(self.student)
+        before = AuditLog.objects.count()
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/items/{item.pk}/edit/",
+            self._panel_data(item, status=Item.STATUS_REJECTED),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "请填写审核批语")
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_PENDING)
+        self.assertEqual(AuditLog.objects.count(), before)
+
+    def test_panel_status_change_saves_comment(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/items/{item.pk}/edit/",
+            self._panel_data(item, status=Item.STATUS_REJECTED, review_comment="抬头不对，请换开"),
+        )
+        self.assertRedirects(response, "/")
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_REJECTED)
+        log = AuditLog.objects.filter(action="update").latest("id")
+        self.assertEqual(log.comment, "抬头不对，请换开")
+
+    def test_panel_comment_without_status_change_rejected(self):
+        item = self._create_item(self.student)
+        before = AuditLog.objects.count()
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/items/{item.pk}/edit/",
+            self._panel_data(item, review_comment="手滑写的批语"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "批语请留空")
+        self.assertEqual(AuditLog.objects.count(), before)
+
+    def test_staff_create_approved_requires_comment(self):
+        self.client.force_login(self.staff)
+        data = _item_data(category=self.category.pk, owner=self.staff.pk, status=Item.STATUS_APPROVED)
+        response = self.client.post("/items/new/", data)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "请填写审核批语")
+        self.assertFalse(Item.objects.filter(status=Item.STATUS_APPROVED).exists())
+
+    def test_staff_create_approved_with_comment_logs_it(self):
+        self.client.force_login(self.staff)
+        data = _item_data(category=self.category.pk, owner=self.staff.pk,
+                          status=Item.STATUS_APPROVED, review_comment="存量条目，已人工核对")
+        response = self.client.post("/items/new/", data)
+        self.assertRedirects(response, "/")
+        item = Item.objects.latest("id")
+        self.assertEqual(item.status, Item.STATUS_APPROVED)
+        log = AuditLog.objects.get(action="create", item_pk=item.pk)
+        self.assertEqual(log.comment, "存量条目，已人工核对")
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)

@@ -23,7 +23,7 @@ from openpyxl.styles import Font
 from . import pairing, staging, stamping, vision
 from .attachments import (KIND_LABELS, attachment_groups, build_attachment, category_help_text,
                          decimal_or_none, ocr_value, plan_decimal)
-from .audit import attachment_entries, attachment_entry, mark_attachments
+from .audit import attachment_entries, attachment_entry, mark_attachments, mark_comment
 from .forms import AttachmentForm, ItemPanelForm
 from .models import Attachment, Batch, Category, Item
 from .suggest import category_payloads, llm_merge_groups, pair_summary, suggest_member
@@ -73,6 +73,26 @@ def _first_error(form, errors):
         for error in field_errors:
             return str(error)
     return "保存失败"
+
+
+COMMENT_MAX_LENGTH = 200
+
+
+def _review_comment(raw, changed):
+    """审核批语与状态变更绑定：变更必填、未变更必须留空。返回 (批语, 错误)。"""
+    comment = str(raw).strip() if isinstance(raw, str) else ""
+    if len(comment) > COMMENT_MAX_LENGTH:
+        return None, f"批语最多 {COMMENT_MAX_LENGTH} 字"
+    if changed and not comment:
+        return None, "请填写审核批语"
+    if not changed and comment:
+        return None, "未变更审核状态，批语请留空"
+    return comment, None
+
+
+def _latest_review(logs):
+    """最新一条带批语的留痕，供侧边栏头部展示。"""
+    return next((log for log in logs if log.comment), None)
 
 
 @login_required
@@ -155,22 +175,30 @@ def item_create(request):
         form = ItemPanelForm(request.POST, request.FILES, staff=request.user.is_staff)
         attachments, errors = _collect_new_attachments(request)
         if form.is_valid() and not errors:
-            item = form.save(commit=False)
-            if not request.user.is_staff:
-                item.owner = request.user
-            item.batch = batch
-            item.position = Item.next_position()
-            mark_attachments(item, [attachment_entry(a) for a in attachments], [])
-            item.save()
-            for attachment in attachments:
-                attachment.item = item
-                attachment.save()
-            if _is_fetch(request):
-                return JsonResponse({"ok": True, "warnings": check_item(item)})
-            for warning in check_item(item):
-                messages.warning(request, warning)
-            messages.success(request, "已提交，等待管理员审核。")
-            return redirect("board")
+            comment, comment_error = _review_comment(
+                form.cleaned_data.get("review_comment"),
+                form.cleaned_data.get("status", Item.STATUS_PENDING) != Item.STATUS_PENDING,
+            )
+            if comment_error:
+                form.add_error("review_comment", comment_error)
+            else:
+                item = form.save(commit=False)
+                if not request.user.is_staff:
+                    item.owner = request.user
+                item.batch = batch
+                item.position = Item.next_position()
+                mark_attachments(item, [attachment_entry(a) for a in attachments], [])
+                mark_comment(item, comment)
+                item.save()
+                for attachment in attachments:
+                    attachment.item = item
+                    attachment.save()
+                if _is_fetch(request):
+                    return JsonResponse({"ok": True, "warnings": check_item(item)})
+                for warning in check_item(item):
+                    messages.warning(request, warning)
+                messages.success(request, "已提交，等待管理员审核。")
+                return redirect("board")
         for error in errors:
             form.add_error(None, error)
         if _is_fetch(request):
@@ -190,38 +218,49 @@ def item_update(request, pk):
     item = get_object_or_404(Item, pk=pk)
     _owned_item(request, item)
     _reject_archived(item)
+    previous_status = item.status  # 表单校验会把 cleaned_data 写回实例，旧状态须提前取
     if request.method == "POST":
         form = ItemPanelForm(request.POST, request.FILES, instance=item, staff=request.user.is_staff)
         attachments, errors = _collect_new_attachments(request)
         if form.is_valid() and not errors:
             before = attachment_entries(item)
-            item = form.save(commit=False)
-            if not request.user.is_staff:
-                item.owner = request.user
-            mark_attachments(item, before + [attachment_entry(a) for a in attachments], before)
-            item.save()
-            for attachment in attachments:
-                attachment.item = item
-                attachment.save()
-            if _is_fetch(request):
-                return JsonResponse({"ok": True, "warnings": check_item(item)})
-            for warning in check_item(item):
-                messages.warning(request, warning)
-            messages.success(request, "已更新。")
-            return redirect("board")
+            comment, comment_error = _review_comment(
+                form.cleaned_data.get("review_comment"),
+                form.cleaned_data.get("status", previous_status) != previous_status,
+            )
+            if comment_error:
+                form.add_error("review_comment", comment_error)
+            else:
+                item = form.save(commit=False)
+                if not request.user.is_staff:
+                    item.owner = request.user
+                mark_attachments(item, before + [attachment_entry(a) for a in attachments], before)
+                mark_comment(item, comment)
+                item.save()
+                for attachment in attachments:
+                    attachment.item = item
+                    attachment.save()
+                if _is_fetch(request):
+                    return JsonResponse({"ok": True, "warnings": check_item(item)})
+                for warning in check_item(item):
+                    messages.warning(request, warning)
+                messages.success(request, "已更新。")
+                return redirect("board")
         for error in errors:
             form.add_error(None, error)
         if _is_fetch(request):
             return JsonResponse({"error": _first_error(form, errors)}, status=400)
     else:
         form = ItemPanelForm(instance=item, staff=request.user.is_staff)
+    logs = list(item.audit_logs.all())
     return render(request, "core/item_panel.html", {
         "form": form,
         "item": item,
         "is_create": False,
         "can_edit": not item.batch.archived,
         "is_staff": request.user.is_staff,
-        "audit_logs": item.audit_logs.all(),
+        "audit_logs": logs,
+        "latest_review": _latest_review(logs),
         "attachment_groups": attachment_groups(item),
         "warnings": check_item(item),
     })
@@ -234,12 +273,14 @@ def item_panel(request, pk):
         Item.objects.select_related("owner", "category", "batch"), pk=pk
     )
     can_edit = (request.user.is_staff or item.owner_id == request.user.id) and not item.batch.archived
+    logs = list(item.audit_logs.all())
     context = {
         "item": item,
         "is_create": False,
         "can_edit": can_edit,
         "is_staff": request.user.is_staff,
-        "audit_logs": item.audit_logs.all(),
+        "audit_logs": logs,
+        "latest_review": _latest_review(logs),
         "attachment_groups": attachment_groups(item),
         "warnings": check_item(item),
     }
@@ -286,7 +327,11 @@ def item_field_update(request, pk):
         elif field == "status":
             if value not in STATUS_FILTERS:
                 return JsonResponse({"error": "状态无效"}, status=400)
+            comment, error = _review_comment(payload.get("comment"), value != item.status)
+            if error:
+                return JsonResponse({"error": error}, status=400)
             item.status = value
+            mark_comment(item, comment)
         elif field == "owner":
             owner = User.objects.filter(pk=_pk_value(value), is_active=True).first()
             if owner is None:
