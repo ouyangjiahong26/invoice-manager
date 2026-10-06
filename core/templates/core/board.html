@@ -144,11 +144,14 @@
   </div>
 </template>
 
+<form id="board-csrf" hidden>{% csrf_token %}</form>
+
 <script>
 (function () {
   "use strict";
-  var csrfCookie = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
-  var CSRF = csrfCookie ? csrfCookie[1] : "";
+  // 令牌取服务端渲染值：父域与主机域同名 cookie 并存时，document.cookie 读到第一个，
+  // Django 校验最后一个，两者不一致会让行内提交全部 403
+  var CSRF = document.querySelector("#board-csrf [name=csrfmiddlewaretoken]").value;
   var PANEL = document.getElementById("panel");
   var MASK = document.getElementById("panel-mask");
   var TOAST = document.getElementById("toast");
