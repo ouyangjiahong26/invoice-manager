@@ -442,13 +442,17 @@ def batch_create(request):
         "vision_configured": vision.configured(),
         "categories": category_payloads(),
         "category_notes": category_help_text(),
+        "max_files": staging.MAX_SESSION_FILES,
     })
 
 
 @require_POST
 @login_required
 def batch_stage(request):
-    """批量页暂存上传：文件落配对会话目录，返回 session_id 与文件清单（ADR-0008）。"""
+    """批量页暂存上传：文件落配对会话目录，返回 session_id 与文件清单（ADR-0008）。
+
+    请求带 session_id 时追加到该会话（校验归属），让分多次选择的文件共用同一会话。
+    """
     uploads = [f for f in request.FILES.getlist("files") if f.name]
     if not uploads:
         return JsonResponse({"error": "缺少 files"}, status=400)
@@ -458,7 +462,11 @@ def batch_stage(request):
         error = validate_upload(upload)
         if error:
             return JsonResponse({"error": f"{upload.name}：{error}"}, status=400)
-    session_id, files = staging.create_session(request.user.id, uploads)
+    try:
+        session_id, files = staging.create_session(
+            request.user.id, uploads, (request.POST.get("session_id") or "").strip() or None)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
     return JsonResponse({"session_id": session_id, "files": files})
 
 

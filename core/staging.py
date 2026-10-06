@@ -2,10 +2,12 @@
 
 会话目录含 meta.json（{"user_id": ...}）与 "<file_id>__<安全化文件名>" 两类文件。
 生命周期：提交成功立即 cleanup。每次 create_session 顺手清扫 mtime 超 TTL 的残留目录。
+同一批材料分多次选择时追加到同一会话，file_id 才始终能被提交与重读解析。
 本模块只管文件落盘与归属校验，不做上传格式校验（views 层复用 vision.validate_upload）。
 """
 
 import json
+import os
 import re
 import shutil
 import time
@@ -15,7 +17,7 @@ from pathlib import Path
 from django.conf import settings
 
 SESSION_TTL_SECONDS = 30 * 60
-MAX_SESSION_FILES = 30
+MAX_SESSION_FILES = 60  # 单次选择的上限；分多次选择会追加到同一会话
 
 _SAFE_NAME = re.compile(r"[^\w.\-\u4e00-\u9fff]+")
 
@@ -51,13 +53,21 @@ def sweep():
             continue
 
 
-def create_session(user_id, uploads):
-    """持久化一批上传文件，返回 (session_id, [{"id", "name"}, ...])。"""
+def create_session(user_id, uploads, session_id=None):
+    """持久化一批上传文件，返回 (session_id, [{"id", "name"}, ...])。
+
+    session_id 为空时新建会话；否则校验归属后追加到该会话。继续追加视为活跃，
+    先把 mtime 推到当前再清扫，避免本轮清扫删掉正在使用的会话。
+    """
+    if session_id:
+        session = session_dir(session_id, user_id)
+        os.utime(session)
+    else:
+        session_id = uuid.uuid4().hex
+        session = _root() / session_id
+        session.mkdir(parents=True)
+        (session / "meta.json").write_text(json.dumps({"user_id": user_id}), encoding="utf-8")
     sweep()
-    session_id = uuid.uuid4().hex
-    session = _root() / session_id
-    session.mkdir(parents=True)
-    (session / "meta.json").write_text(json.dumps({"user_id": user_id}), encoding="utf-8")
     files = []
     for upload in uploads:
         file_id = uuid.uuid4().hex

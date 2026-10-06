@@ -158,6 +158,16 @@
   var tbody = document.getElementById("board-tbody");
   var table = document.getElementById("board-table");
 
+  // 安卓微信（X5）里 iframe 载入 PDF 走下载流程会弹系统「另存为」，预览改文字提示
+  var WECHAT_ANDROID = /Android/i.test(navigator.userAgent) && /MicroMessenger/i.test(navigator.userAgent);
+
+  function pdfNote() {
+    var note = document.createElement("div");
+    note.className = "pdf-note";
+    note.textContent = "微信内不支持 PDF 预览，请用电脑查看";
+    return note;
+  }
+
   function go(changes) {
     var params = new URLSearchParams(location.search);
     Object.keys(changes).forEach(function (key) {
@@ -231,7 +241,10 @@
         PANEL.innerHTML = html;
         PANEL.hidden = false;
         MASK.hidden = false;
-        PANEL.querySelectorAll("iframe[data-src]").forEach(function (frame) { frame.src = frame.dataset.src; });
+        PANEL.querySelectorAll("iframe[data-src]").forEach(function (frame) {
+          if (WECHAT_ANDROID) frame.replaceWith(pdfNote());
+          else frame.src = frame.dataset.src;
+        });
         PANEL.scrollTop = 0;
         initPanel();
       })
@@ -637,9 +650,13 @@
       var url = URL.createObjectURL(file);
       card._url = url;
       if (/\.pdf$/i.test(file.name)) {
-        var frame = document.createElement("iframe");
-        frame.src = url;
-        preview.appendChild(frame);
+        if (WECHAT_ANDROID) {
+          preview.appendChild(pdfNote());
+        } else {
+          var frame = document.createElement("iframe");
+          frame.src = url;
+          preview.appendChild(frame);
+        }
       } else {
         var img = document.createElement("img");
         img.src = url;

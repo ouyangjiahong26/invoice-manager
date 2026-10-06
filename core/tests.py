@@ -95,12 +95,15 @@ class SubmissionTestCase(TestCase):
         self.assertRedirects(response, "/")
         return Item.objects.latest("id")
 
-    def _stage(self, uploads):
-        """走 stage 端点建会话，返回 (session_id, [file_id])。"""
+    def _stage(self, uploads, session_id=None):
+        """走 stage 端点建会话（带 session_id 则追加），返回 (session_id, [file_id])。"""
         self.client.force_login(self.student)
-        response = self.client.post("/items/batch/stage/", {"files": uploads})
-        data = response.json()
-        return data["session_id"], [f["id"] for f in data["files"]]
+        data = {"files": uploads}
+        if session_id:
+            data["session_id"] = session_id
+        response = self.client.post("/items/batch/stage/", data)
+        payload = response.json()
+        return payload["session_id"], [f["id"] for f in payload["files"]]
 
 
 
@@ -1052,6 +1055,30 @@ class BatchStageTests(SubmissionTestCase):
         self.client.logout()
         self.assertEqual(self.client.post("/items/batch/stage/", {}).status_code, 302)
 
+    def test_stage_appends_to_existing_session(self):
+        """分多次选择的文件追加到同一会话：file_id 引用不跨会话，提交才解析得到全部文件。"""
+        session_id, _ = self._stage([_png_upload("发票 1.png")])
+        second_id, file_ids = self._stage([_png_upload("payment.pdf")], session_id=session_id)
+        self.assertEqual(second_id, session_id)
+        self.assertEqual(len(file_ids), 1)
+        session = Path(TEMP_MEDIA_ROOT) / "tmp" / "batch" / session_id
+        self.assertEqual(len(list(session.iterdir())), 3)  # meta.json + 2 个文件
+
+    def test_stage_rejects_missing_or_foreign_session(self):
+        self.client.force_login(self.student)
+        response = self.client.post("/items/batch/stage/", {
+            "files": [_png_upload("a.png")], "session_id": "0" * 32,
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("已过期", response.json()["error"])
+        session_id, _ = self._stage([_png_upload("b.png")])
+        self.client.force_login(self.student_b)
+        response = self.client.post("/items/batch/stage/", {
+            "files": [_png_upload("c.png")], "session_id": session_id,
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("不属于当前用户", response.json()["error"])
+
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchSubmitTests(SubmissionTestCase):
@@ -1151,6 +1178,27 @@ class BatchSubmitTests(SubmissionTestCase):
         from django.conf import settings
         self.assertFalse(
             (Path(settings.MEDIA_ROOT) / "tmp" / "batch" / session_id).exists())
+
+    def test_submit_spans_files_staged_in_multiple_rounds(self):
+        """回归：分多次选择的文件同属一个会话，提交能解析全部 file_id。
+
+        此前每次选择都新建会话，提交只带最后一个会话，先传的文件报第 N 组文件不存在。
+        """
+        session_id, invoice_ids = self._stage([_png_upload("invoice.png")])
+        second_id, payment_ids = self._stage(
+            [_png_upload("payment.png")], session_id=session_id)
+        self.assertEqual(second_id, session_id)
+        self.client.force_login(self.student)
+        response = self._post_batch(session_id, [{
+            "title": "打印费", "category": self.category.pk,
+            "actual_amount": "5.00", "invoice_amount": "5.00",
+            "files": [
+                {"file_id": invoice_ids[0], "kind": "invoice", "amount": "5.00"},
+                {"file_id": payment_ids[0], "kind": "payment", "amount": "5.00"},
+            ],
+        }])
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").attachments.count(), 2)
 
     def test_solo_invoice_group_submits_with_zero_actual(self):
         session_id, file_ids = self._stage([_png_upload("invoice.png")])
