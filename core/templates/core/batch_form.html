@@ -158,6 +158,17 @@
   var submitUrl = "{% url 'batch_submit' %}";
   var boardUrl = "{% url 'board' %}";
   var categories = JSON.parse(document.getElementById("categories-data").textContent);
+  var MAX_FILES = {{ max_files }};
+
+  // 安卓微信（X5）里 iframe 载入 PDF 走下载流程会弹系统「另存为」，预览改文字提示
+  var WECHAT_ANDROID = /Android/i.test(navigator.userAgent) && /MicroMessenger/i.test(navigator.userAgent);
+
+  function pdfNote() {
+    var note = document.createElement("div");
+    note.className = "pdf-note";
+    note.textContent = "微信内不支持 PDF 预览，请用电脑查看";
+    return note;
+  }
 
   var cards = [];          // 卡片元素，下标即记录 id
   var sessionId = null;    // 配对会话 id（服务端暂存文件的引用凭据）
@@ -185,9 +196,13 @@
     var body = document.getElementById("zoom-body");
     body.innerHTML = "";
     if (/\.pdf$/i.test(card._file.name)) {
-      var frame = document.createElement("iframe");
-      frame.src = card._url;
-      body.appendChild(frame);
+      if (WECHAT_ANDROID) {
+        body.appendChild(pdfNote());
+      } else {
+        var frame = document.createElement("iframe");
+        frame.src = card._url;
+        body.appendChild(frame);
+      }
     } else {
       var img = document.createElement("img");
       img.src = card._url;
@@ -224,6 +239,8 @@
     var box = document.getElementById("batch-error");
     box.textContent = text;
     box.hidden = false;
+    // 报错框在页面上部，提交按钮在下方，滚动到可见处避免用户看不到原因
+    box.scrollIntoView({behavior: "smooth", block: "center"});
   }
 
   function addCard(file, fileId) {
@@ -236,9 +253,13 @@
     card.querySelector(".attach-name").textContent = file.name;
     var preview = card.querySelector(".attach-preview");
     if (/\.pdf$/i.test(file.name)) {
-      var frame = document.createElement("iframe");
-      frame.src = card._url;
-      preview.appendChild(frame);
+      if (WECHAT_ANDROID) {
+        preview.appendChild(pdfNote());
+      } else {
+        var frame = document.createElement("iframe");
+        frame.src = card._url;
+        preview.appendChild(frame);
+      }
     } else {
       var img = document.createElement("img");
       img.src = card._url;
@@ -388,14 +409,26 @@
   uploadInput.addEventListener("change", function () {
     var files = Array.prototype.slice.call(uploadInput.files, 0);
     if (!files.length) return;
+    uploadInput.value = "";  // 允许再次追加同名文件
+    if (files.length > MAX_FILES) {
+      showError("一次最多上传 " + MAX_FILES + " 个文件，请减少选择或分批上传");
+      return;
+    }
     queueActive = true;
     refreshSummary();
-    uploadInput.value = "";  // 允许再次追加同名文件
-    // 先整体暂存到配对会话（ADR-0008），再串行识别
+    // 先整体暂存到配对会话（ADR-0008），再串行识别；已有会话时追加，
+    // 让分多次选择的文件共用一个会话，提交与重读才解析得到全部 file_id
     var data = new FormData();
     files.forEach(function (file) { data.append("files", file, file.name); });
+    if (sessionId) data.append("session_id", sessionId);
     fetch(stageUrl, {method: "POST", body: data, credentials: "same-origin", headers: {"X-CSRFToken": csrf}})
-      .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(resp); })
+      .then(function (resp) {
+        if (resp.ok) return resp.json();
+        if (resp.status === 413) throw new Error("文件总大小超过 20 MB 限制，请分批上传");
+        return resp.json().catch(function () { return {}; }).then(function (payload) {
+          throw new Error(payload.error || "文件上传失败，请重试");
+        });
+      })
       .then(function (result) {
         sessionId = result.session_id;
         logLine("已上传 " + result.files.length + " 个文件，开始逐张识别", true);
@@ -411,9 +444,9 @@
         }
         next();
       })
-      .catch(function () {
+      .catch(function (err) {
         queueActive = false;
-        showError("文件上传失败，请重试");
+        showError(err && err.message ? err.message : "文件上传失败，请重试");
         refreshSummary();
       });
   });
