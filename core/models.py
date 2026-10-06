@@ -170,6 +170,7 @@ class AuditLog(models.Model):
     )
     actor_name = models.CharField("操作人姓名", max_length=100, blank=True)
     snapshot = models.JSONField("变更明细", default=dict)
+    comment = models.CharField("审核批语", max_length=200, blank=True)
     created_at = models.DateTimeField("操作时间", auto_now_add=True)
 
     class Meta:
@@ -181,8 +182,14 @@ class AuditLog(models.Model):
         return f"{self.actor_name or '系统'} {self.get_action_display()} #{self.item_pk}"
 
     def detail_rows(self):
-        """返回 [(字段标签, 明细文本)]。update 为“由旧值改为新值”，create/delete 为终值。"""
+        """返回 [(字段标签, 明细文本)]。update 为“由旧值改为新值”，create/delete 为终值。
+        状态值按 choices 渲染中文；有审核批语时附一行。"""
         from .audit import FIELD_LABELS, format_attachments
+
+        status_labels = dict(Item.STATUS_CHOICES)
+
+        def status_text(value):
+            return status_labels.get(value, value)
 
         rows = []
         for field, change in self.snapshot.items():
@@ -190,8 +197,11 @@ class AuditLog(models.Model):
             if field == "attachments":
                 text = format_attachments(change)
             elif isinstance(change, list):
-                text = "由 %s 改为 %s" % tuple(change)
+                values = [status_text(value) for value in change] if field == "status" else change
+                text = "由 %s 改为 %s" % tuple(values)
             else:
-                text = change
+                text = status_text(change) if field == "status" else change
             rows.append((label, text))
+        if self.comment:
+            rows.append(("批语", self.comment))
         return rows

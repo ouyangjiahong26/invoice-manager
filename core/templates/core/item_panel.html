@@ -16,6 +16,13 @@
 </div>
 {% endif %}
 
+{% if latest_review %}
+<div class="panel-review">
+  <div class="review-text">批语：{{ latest_review.comment }}</div>
+  <div class="review-meta">{{ latest_review.actor_name|default:"系统" }} · {{ latest_review.created_at|date:"Y-m-d H:i" }}</div>
+</div>
+{% endif %}
+
 {% if warnings %}
 <div class="panel-warnings">
   {% for warning in warnings %}<div>{{ warning }}</div>{% endfor %}

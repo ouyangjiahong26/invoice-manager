@@ -117,6 +117,18 @@
 <aside id="panel" hidden></aside>
 <div id="panel-mask" hidden></div>
 <div id="toast" hidden></div>
+<div id="review-modal" hidden>
+  <form id="review-form">
+    <h3 id="review-title">审核</h3>
+    <div class="review-context" id="review-context"></div>
+    <textarea id="review-comment" rows="3" maxlength="200" placeholder="退回原因等，学生可见"></textarea>
+    <div class="review-error" id="review-error" hidden></div>
+    <div class="review-actions">
+      <button type="button" class="secondary" id="review-cancel">取消</button>
+      <button type="submit" id="review-confirm">确认</button>
+    </div>
+  </form>
+</div>
 
 <template id="inline-selects">
   <select data-field="category">
@@ -345,6 +357,10 @@
     function save() {
       if (done) return;
       done = true;
+      if (field === "status") {  // 状态变更经弹窗收集批语，不能直接保存
+        renderCell(cell, tr, field);
+        return;
+      }
       var value = editor.value;
       postJSON("/items/" + tr.dataset.pk + "/field/", {field: field, value: value})
         .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
@@ -370,6 +386,15 @@
       if (e.key === "Escape") { e.preventDefault(); restore(); }
     });
     editor.addEventListener("blur", save);
+    if (field === "status") {
+      editor.addEventListener("change", function () {
+        if (done || editor.value === tr.dataset.status) return;
+        done = true;
+        var value = editor.value;
+        renderCell(cell, tr, field);  // 先恢复原值，取消弹窗时无需回滚
+        openReviewModal(tr, value);
+      });
+    }
   }
   if (tbody) tbody.addEventListener("click", function (e) {
     var cell = e.target.closest("td.editable");
@@ -379,6 +404,84 @@
       cell.dataset.original = cell.textContent.trim();
     }
     startEdit(cell);
+  });
+
+  /* ---------- 审核批语弹窗（状态变更必填） ---------- */
+  var REVIEW = document.getElementById("review-modal");
+  var REVIEW_TITLE = document.getElementById("review-title");
+  var REVIEW_CONTEXT = document.getElementById("review-context");
+  var REVIEW_COMMENT = document.getElementById("review-comment");
+  var REVIEW_ERROR = document.getElementById("review-error");
+  var REVIEW_CONFIRM = document.getElementById("review-confirm");
+  var reviewPending = null;
+
+  function openReviewModal(tr, value) {
+    reviewPending = {tr: tr, value: value};
+    REVIEW_TITLE.textContent = "标记为" + optionText("status", value);
+    var title = tr.querySelector("td.cell-title");
+    var payer = tr.querySelector("td.cell-payer");
+    REVIEW_CONTEXT.textContent = [
+      title ? title.textContent.trim() : "",
+      payer ? payer.textContent.trim() : "",
+    ].filter(Boolean).join(" · ");
+    REVIEW_COMMENT.value = "";
+    REVIEW_ERROR.hidden = true;
+    REVIEW_CONFIRM.disabled = false;
+    REVIEW.hidden = false;
+    REVIEW_COMMENT.focus();
+  }
+  function closeReviewModal() {
+    REVIEW.hidden = true;
+    reviewPending = null;
+  }
+  document.getElementById("review-cancel").addEventListener("click", closeReviewModal);
+  REVIEW.addEventListener("click", function (e) { if (e.target === REVIEW) closeReviewModal(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !REVIEW.hidden) closeReviewModal();
+  });
+  document.getElementById("review-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    if (!reviewPending) return;
+    var comment = REVIEW_COMMENT.value.trim();
+    if (!comment) {
+      REVIEW_ERROR.textContent = "请填写审核批语";
+      REVIEW_ERROR.hidden = false;
+      REVIEW_COMMENT.focus();
+      return;
+    }
+    var pending = reviewPending;
+    REVIEW_CONFIRM.disabled = true;
+    postJSON("/items/" + pending.tr.dataset.pk + "/field/",
+             {field: "status", value: pending.value, comment: comment})
+      .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data.ok) {
+          var message = result.data.error || "保存失败";
+          if (reviewPending === pending) {
+            REVIEW_ERROR.textContent = message;
+            REVIEW_ERROR.hidden = false;
+            REVIEW_CONFIRM.disabled = false;
+          } else {
+            toast(message);
+          }
+          return;
+        }
+        if (reviewPending === pending) closeReviewModal();
+        renderBadge(pending.tr.querySelector("td.cell-status"), pending.value);
+        pending.tr.dataset.status = pending.value;
+        if (result.data.warnings && result.data.warnings.length) {
+          toast(result.data.warnings.join("；"));
+        }
+      })
+      .catch(function () {
+        if (reviewPending === pending) {
+          REVIEW_ERROR.textContent = "网络错误";
+          REVIEW_ERROR.hidden = false;
+          REVIEW_CONFIRM.disabled = false;
+        } else {
+          toast("网络错误");
+        }
+      });
   });
 
   /* ---------- 拖拽调序（staff，限类别内） ---------- */
