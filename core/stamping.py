@@ -11,7 +11,9 @@
 import pymupdf
 from django.conf import settings
 
-from .validation import IMAGE_SUFFIXES
+from .validation import (
+    ALIPAY_ORDER_NO_RE, IMAGE_SUFFIXES, JD_ORDER_NO_RE, WECHAT_ORDER_NO_RE,
+)
 
 RED = (1, 0, 0)
 # 单号前缀称谓对齐支付平台截图里的字段名，方便秘书逐字核对。判不出平台时兜底
@@ -33,11 +35,12 @@ def _label(payment, no):
     platform = (ocr.get("platform") or "").strip()
     if platform in PLATFORM_LABELS:
         return PLATFORM_LABELS[platform]
-    # 识别没给平台时按单号前缀推断：支付宝订单号 20 开头 / 微信交易单号 4 开头
-    if no.startswith("20"):
+    if ALIPAY_ORDER_NO_RE.match(no):
         return PLATFORM_LABELS["alipay"]
-    if no.startswith("4"):
+    if WECHAT_ORDER_NO_RE.match(no):
         return PLATFORM_LABELS["wechat"]
+    if JD_ORDER_NO_RE.match(no):
+        return "总订单编号"
     return FALLBACK_LABEL
 
 
