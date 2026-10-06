@@ -433,7 +433,7 @@
               var numA = parseFloat(cellA);
               var numB = parseFloat(cellB);
               if (isNaN(numA) && isNaN(numB)) result = 0;
-              else if (isNaN(numA)) result = 1;  // 序号为 —（待审/退回）的行同 Excel 空值，升降序恒排最后
+              else if (isNaN(numA)) result = 1;  // 序号为占位短横（待审/退回）的行同 Excel 空值，升降序恒排最后
               else if (isNaN(numB)) result = -1;
               else result = nextDir === "asc" ? numA - numB : numB - numA;
             } else {
@@ -483,6 +483,7 @@
   var draftCheckUrl = "{% url 'item_draft_check' %}";
   var manualMatch = false;
   var draftWarnings = [];
+  var lastDraftPayload = null;
   var draftTimer = null;
 
   function initPanel() {
@@ -514,6 +515,8 @@
     var itemForm = PANEL.querySelector("#panel-form");
     if (!itemForm) return;
     manualMatch = false;
+    draftWarnings = [];
+    lastDraftPayload = null;
     var csrfInput = itemForm.querySelector("[name=csrfmiddlewaretoken]");
     var prefillUrl = "{% url 'item_prefill' %}";
     var actualInput = document.getElementById("id_actual_amount");
@@ -774,15 +777,18 @@
           ocr: card.querySelector('[data-role="ocr"]') ? card.querySelector('[data-role="ocr"]').value : ""
         };
       });
+      var payload = JSON.stringify({
+        actual_amount: actualInput ? actualInput.value : "",
+        invoice_amount: invoiceInput ? invoiceInput.value : "",
+        attachments: drafts
+      });
+      if (payload === lastDraftPayload) return;  // 内容未变不重查，隔断“核对触发渲染、渲染又触发核对”的循环
+      lastDraftPayload = payload;
       fetch(draftCheckUrl, {
         method: "POST",
         credentials: "same-origin",
         headers: {"X-CSRFToken": csrfInput.value, "Content-Type": "application/json"},
-        body: JSON.stringify({
-          actual_amount: actualInput ? actualInput.value : "",
-          invoice_amount: invoiceInput ? invoiceInput.value : "",
-          attachments: drafts
-        })
+        body: payload
       })
         .then(function (resp) { return resp.ok ? resp.json() : null; })
         .then(function (data) {
@@ -876,6 +882,7 @@
       draftWarnings.forEach(function (warning) {
         addLine("line warn", [{ text: warning }]);
       });
+      scheduleCheck();
       if (state.remarks && !state.matched) {
         var label = document.createElement("label");
         label.className = "line";

@@ -997,7 +997,7 @@ class VisionDetectTests(SimpleTestCase):
 class StagingSafeNameTests(SimpleTestCase):
     def test_long_name_keeps_extension(self):
         """超长文件名截断保留扩展名：丢后缀会让识别按文件名错走图片路径。"""
-        long_pdf = "999999999999_QCLOUD_E02EA992120261050519147_qcloud_invoice_6ac3259edb9a91791174" + "0123456789" * 5 + ".pdf"
+        long_pdf = "999999999999_QCLOUD_E02EA9TEST00000000000000_qcloud_invoice_6ac3259edb9a91791174" + "0123456789" * 5 + ".pdf"
         name = staging._safe_name(long_pdf)
         self.assertLessEqual(len(name), 80)
         self.assertTrue(name.endswith(".pdf"))
@@ -2056,3 +2056,52 @@ class MergePageResultsTests(SimpleTestCase):
         result = {"amount": None, "items_summary": "充值 100 元入余额"}
         self.assertTrue(vision._meaningful("support", result))
         self.assertFalse(vision._meaningful("support", {"amount": None, "items_summary": ""}))
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class NonFiniteAmountTests(SubmissionTestCase):
+    """金额为 NaN、Infinity 等非有限值时不得 500：宽松解析当缺金额，提交报 400。"""
+
+    def test_draft_check_non_finite_amount_is_not_500(self):
+        self.client.force_login(self.student)
+        for bad in ("sNaN", "NaN", "Infinity"):
+            response = self.client.post(
+                "/items/draft-check/",
+                json.dumps({
+                    "actual_amount": "10.00", "invoice_amount": "10.00",
+                    "attachments": [{"kind": "payment", "amount": bad}],
+                }),
+                content_type="application/json")
+            self.assertEqual(response.status_code, 200, bad)
+
+    def test_batch_group_check_non_finite_amount_is_not_500(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/check/",
+            json.dumps({"groups": [{
+                "title": "非有限金额", "category": self.category.pk,
+                "actual_amount": "sNaN",
+                "files": [{"kind": "invoice", "amount": "10.00"},
+                          {"kind": "payment", "amount": "NaN"}],
+            }]}),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["groups"][0]["state"], "ok")
+
+    def test_submit_non_finite_amount_is_400(self):
+        session_id, file_ids = self._stage(
+            [_png_upload("invoice.png"), _png_upload("payment.png")])
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({"session_id": session_id, "groups": [{
+                "title": "非有限金额", "category": self.category.pk,
+            "actual_amount": "10.00", "invoice_amount": "10.00",
+            "files": [
+                {"file_id": file_ids[0], "kind": "invoice", "amount": "10.00"},
+                {"file_id": file_ids[1], "kind": "payment", "amount": "sNaN"},
+            ]}]}),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("金额格式不正确", response.json()["error"])
+        self.assertFalse(Item.objects.exists())

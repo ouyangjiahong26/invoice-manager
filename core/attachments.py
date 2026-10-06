@@ -43,6 +43,8 @@ def build_attachment(kind, upload, fields):
             attachment.amount = Decimal(str(raw_amount).strip())
         except InvalidOperation:
             raise ValueError("金额格式不正确")
+        if not attachment.amount.is_finite():
+            raise ValueError("金额格式不正确")
         if attachment.amount < 0:
             raise ValueError("金额不能为负")
     attachment.order_no = text("order_no", 64)
@@ -65,12 +67,14 @@ def ocr_value(raw):
 
 
 def decimal_or_none(raw):
+    """宽松解析金额：非法或非有限值（NaN、Infinity 等）一律返回 None，等同缺金额。"""
     if raw is None or raw == "":
         return None
     try:
-        return Decimal(str(raw).strip())
+        value = Decimal(str(raw).strip())
     except InvalidOperation:
         return None
+    return value if value.is_finite() else None
 
 
 def plan_decimal(raw, label):
