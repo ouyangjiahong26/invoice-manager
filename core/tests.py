@@ -315,6 +315,14 @@ class OrderLineTests(SimpleTestCase):
             ["平台单号: X123"],
         )
 
+    def test_label_jd_order_no(self):
+        """京东订单编号判不出平台（other）时按前缀称总订单编号。"""
+        jd = "34" + "1" * 14
+        self.assertEqual(
+            stamping.order_lines([self._payment(jd, {"platform": "other"})]),
+            [f"总订单编号: {jd}"],
+        )
+
     def test_blank_order_no_skipped(self):
         self.assertEqual(
             stamping.order_lines([self._payment(""), self._payment(None)]), []
@@ -478,7 +486,7 @@ class CheckItemTests(SubmissionTestCase):
         item = self._item()
         self._payment(item, order_no="")
         self.assertIn(
-            "某笔支付的平台单号格式不符（支付宝订单号/微信交易单号），报销时需抄到发票上",
+            "某笔支付的平台单号格式不符（支付宝订单号/微信交易单号/京东订单编号），报销时需抄到发票上",
             check_item(item),
         )
 
@@ -496,6 +504,16 @@ class CheckItemTests(SubmissionTestCase):
         self._payment(item, order_no="4" + "5" * 27)
         self.assertEqual(check_item(item), [])
         self._payment(item, order_no="4" + "1" * 26)  # 27 位不足微信单号长度
+        self.assertTrue(any("平台单号格式不符" in w for w in check_item(item)))
+
+    def test_jd_order_no_passes(self):
+        """京东订单编号 3 开头 12 或 16 位（生产数据实测两种长度）。"""
+        item = self._item()
+        self._payment(item, order_no="34" + "1" * 14)
+        self.assertEqual(check_item(item), [])
+        self._payment(item, order_no="34" + "1" * 10, amount=None)
+        self.assertEqual(check_item(item), [])
+        self._payment(item, order_no="3" + "1" * 13, amount=None)  # 14 位不是已知京东格式
         self.assertTrue(any("平台单号格式不符" in w for w in check_item(item)))
 
     def test_refund_net_amount_is_clean(self):
