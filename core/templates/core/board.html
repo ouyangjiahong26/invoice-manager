@@ -16,7 +16,7 @@
         <button type="submit">创建批次</button>
       </form>
     {% else %}
-      <p>还没有报销批次，请联@管理员创建批次后再提交。</p>
+      <p>还没有报销批次，请联系管理员创建批次后再提交。</p>
     {% endif %}
   </div>
 {% else %}
@@ -93,7 +93,7 @@
       {% for row in rows %}
       <tr data-pk="{{ row.item.pk }}"
           data-category-id="{{ row.item.category_id }}" data-owner-id="{{ row.item.owner_id }}"
-          data-status="{{ row.item.status }}" data-can-edit="{{ row.can_edit|yesno:'1,0' }}">
+          data-status="{{ row.item.status }}">
         {% if user.is_staff and not current_batch.archived %}<td class="drag-handle" title="拖拽调整类别内顺序">⋮⋮</td>{% endif %}
         <td class="num seq">{{ row.seq|default_if_none:"—" }}</td>
         <td class="cell-title{% if row.can_edit %} editable{% endif %}" data-field="title">{{ row.item.title }}</td>
@@ -270,18 +270,23 @@
     var option = select && select.querySelector('option[value="' + value + '"]');
     return option ? option.textContent : value;
   }
+  function renderBadge(cell, value) {
+    var badge = document.createElement("span");
+    badge.className = "badge " + value;
+    badge.textContent = optionText("status", value);
+    cell.textContent = "";
+    cell.appendChild(badge);
+  }
   function renderCell(cell, tr, field, newValue) {
     if (newValue === undefined) {  // 取消编辑：按行数据回填
       if (field === "category") cell.textContent = optionText("category", tr.dataset.categoryId);
-      else if (field === "status") {
-        var status = tr.dataset.status;
-        cell.innerHTML = '<span class="badge ' + status + '">' + optionText("status", status) + "</span>";
-      } else if (field === "payer") cell.textContent = optionText("payer", tr.dataset.ownerId);
+      else if (field === "status") renderBadge(cell, tr.dataset.status);
+      else if (field === "payer") cell.textContent = optionText("payer", tr.dataset.ownerId);
       else cell.textContent = cell.dataset.original || "";
       return;
     }
     if (field === "status") {
-      cell.innerHTML = '<span class="badge ' + newValue + '">' + optionText("status", newValue) + "</span>";
+      renderBadge(cell, newValue);
       tr.dataset.status = newValue;
     } else if (field === "payer") {
       cell.textContent = optionText("payer", newValue);
@@ -475,10 +480,10 @@
       suggestions: [{role: "amount", key: "amount"}]
     }
   };
-  // 与 core/validation.py 的 PLATFORM_ORDER_NO_RE 保持一致（微信交易单号 4 开头 28 位：4\d{27}）
-  var ORDER_NO_RE = /^(20\d{26,30}|4\d{27})$/;
-  var TOLERANCE = 0.005;
+  var draftCheckUrl = "{% url 'item_draft_check' %}";
   var manualMatch = false;
+  var draftWarnings = [];
+  var draftTimer = null;
 
   function initPanel() {
     var closeButton = PANEL.querySelector(".panel-close");
@@ -520,7 +525,11 @@
     [actualInput, invoiceInput].forEach(function (input) {
       if (!input) return;
       if (input.value) input.dataset.dirty = "1";
-      input.addEventListener("input", function () { input.dataset.dirty = "1"; render(); });
+      input.addEventListener("input", function () {
+        input.dataset.dirty = "1";
+        render();
+        scheduleCheck();
+      });
     });
 
     function cards(kind) {
@@ -642,6 +651,7 @@
         input.addEventListener("input", function () {
           confirmField(card, field.role);
           render();
+          scheduleCheck();
         });
         label.appendChild(input);
         fields.appendChild(label);
@@ -732,12 +742,6 @@
       var refundTotal = round2(total(refundCards));
       var net = round2(paymentTotal - refundTotal);
 
-      var badNo = [];
-      paymentCards.concat(refundCards).forEach(function (card) {
-        var no = value(card, "order_no");
-        if (no && !ORDER_NO_RE.test(no)) badNo.push(no);
-      });
-
       var payable = [];
       paymentCards.forEach(function (card) {
         [value(card, "order_no"), value(card, "merchant_no")].forEach(function (key) {
@@ -753,19 +757,44 @@
         if (payable.indexOf(remark) >= 0) matched = true;
       });
 
-      var actualValue = actualInput && actualInput.value.trim() ? parseFloat(actualInput.value) : null;
-      var invoiceValue = invoiceInput && invoiceInput.value.trim() ? parseFloat(invoiceInput.value) : null;
-      var amountOk = true;
-      if (actualValue !== null && (paymentCards.length || refundCards.length)
-          && Math.abs(net - actualValue) > TOLERANCE) amountOk = false;
-      if (invoiceValue !== null && invoiceCards.length
-          && Math.abs(invoiceTotal - invoiceValue) > TOLERANCE) amountOk = false;
-
       return {
         invoiceCards: invoiceCards, paymentCards: paymentCards, refundCards: refundCards,
         invoiceTotal: invoiceTotal, paymentTotal: paymentTotal, refundTotal: refundTotal,
-        net: net, badNo: badNo, matched: matched, remarks: remarks, amountOk: amountOk
+        net: net, matched: matched, remarks: remarks
       };
+    }
+
+    // 警告规则本体在 core/validation.py，这里只把草稿送服务端核对后展示结果
+    function checkDraft() {
+      var drafts = cards().map(function (card) {
+        return {
+          kind: card.dataset.kind,
+          amount: value(card, "amount"),
+          order_no: value(card, "order_no"),
+          ocr: card.querySelector('[data-role="ocr"]') ? card.querySelector('[data-role="ocr"]').value : ""
+        };
+      });
+      fetch(draftCheckUrl, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {"X-CSRFToken": csrfInput.value, "Content-Type": "application/json"},
+        body: JSON.stringify({
+          actual_amount: actualInput ? actualInput.value : "",
+          invoice_amount: invoiceInput ? invoiceInput.value : "",
+          attachments: drafts
+        })
+      })
+        .then(function (resp) { return resp.ok ? resp.json() : null; })
+        .then(function (data) {
+          if (!data) return;
+          draftWarnings = data.warnings || [];
+          render();
+        })
+        .catch(function () {});
+    }
+    function scheduleCheck() {
+      clearTimeout(draftTimer);
+      draftTimer = setTimeout(checkDraft, 400);
     }
 
     function autofillTotals(state) {
@@ -784,7 +813,7 @@
       }).length;
       var pending = PANEL.querySelectorAll(".attach-suggestions .suggest").length;
       var unfilled = all.filter(function (card) { return value(card, "amount") === ""; }).length;
-      var passed = pending === 0 && unfilled === 0 && state.badNo.length === 0 && state.amountOk
+      var passed = pending === 0 && unfilled === 0 && draftWarnings.length === 0
         && (state.matched || manualMatch || state.paymentCards.length === 0 || state.remarks === 0);
 
       var text;
@@ -793,10 +822,9 @@
       } else {
         text = "已识别 " + recognized + "/" + all.length + " 张 · 待确认建议 " + pending + " 条";
         if (unfilled) text += " · 未填金额 " + unfilled + " 张";
-        if (state.badNo.length) text += " · 平台单号格式有误";
+        if (draftWarnings.length) text += " · 服务端核对有 " + draftWarnings.length + " 条警告";
         else if (state.matched) text += " · 单号已互配";
         else if (state.remarks) text += " · 单号未互配";
-        if (!state.amountOk) text += " · 金额合计与填写不一致";
         text += passed ? " · AI 已核对完毕" : " · 待人工核对";
       }
       summaryBox.textContent = text;
@@ -815,29 +843,50 @@
       var state = compute();
       autofillTotals(state);
       state = compute();  // 回填后重算，避免拿陈旧输入值判不一致
-      var parts = [];
-      parts.push('<div class="line">发票 <b>' + state.invoiceCards.length + '</b> 张，合计 <b>¥'
-        + state.invoiceTotal.toFixed(2) + '</b>；支付 <b>' + state.paymentCards.length + '</b> 笔，合计 <b>¥'
-        + state.paymentTotal.toFixed(2) + '</b>；退款 <b>¥' + state.refundTotal.toFixed(2)
-        + '</b>；净额 <b>¥' + state.net.toFixed(2) + '</b></div>');
-      if (state.badNo.length) {
-        parts.push('<div class="line warn">平台单号格式有误：' + state.badNo.join("、")
-          + "（支付宝订单号 20 开头 28–32 位 / 微信交易单号 4 开头 28 位）</div>");
-      } else if (state.matched) {
-        parts.push('<div class="line ok">单号已互配</div>');
+      reconcileBox.textContent = "";
+      function addLine(className, segments) {
+        var div = document.createElement("div");
+        div.className = className;
+        segments.forEach(function (seg) {
+          if (seg.bold) {
+            var bold = document.createElement("b");
+            bold.textContent = seg.text;
+            div.appendChild(bold);
+          } else {
+            div.appendChild(document.createTextNode(seg.text));
+          }
+        });
+        reconcileBox.appendChild(div);
+      }
+      addLine("line", [
+        { text: "发票 " }, { text: String(state.invoiceCards.length), bold: true },
+        { text: " 张，合计 " }, { text: "¥" + state.invoiceTotal.toFixed(2), bold: true },
+        { text: "。支付 " }, { text: String(state.paymentCards.length), bold: true },
+        { text: " 笔，合计 " }, { text: "¥" + state.paymentTotal.toFixed(2), bold: true },
+        { text: "。退款 " }, { text: "¥" + state.refundTotal.toFixed(2), bold: true },
+        { text: "。净额 " }, { text: "¥" + state.net.toFixed(2), bold: true },
+      ]);
+      if (state.matched) {
+        addLine("line ok", [{ text: "单号已互配" }]);
       } else if (state.remarks) {
-        parts.push('<div class="line muted">未见互配单号（可能截图无单号，请人工确认）</div>');
+        addLine("line muted", [{ text: "未见互配单号（可能截图无单号，请人工确认）" }]);
       } else {
-        parts.push('<div class="line muted">无发票备注单号可比对</div>');
+        addLine("line muted", [{ text: "无发票备注单号可比对" }]);
       }
-      if (!state.amountOk) {
-        parts.push('<div class="line warn">附件金额合计与填写的发票金额/实付款不一致，请核对</div>');
-      }
+      draftWarnings.forEach(function (warning) {
+        addLine("line warn", [{ text: warning }]);
+      });
       if (state.remarks && !state.matched) {
-        parts.push('<label class="line"><input type="checkbox" id="panel-manual-match"'
-          + (manualMatch ? " checked" : "") + "> 我已人工核对单号</label>");
+        var label = document.createElement("label");
+        label.className = "line";
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.id = "panel-manual-match";
+        checkbox.checked = manualMatch;
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(" 我已人工核对单号"));
+        reconcileBox.appendChild(label);
       }
-      reconcileBox.innerHTML = parts.join("");
       var box = PANEL.querySelector("#panel-manual-match");
       if (box) {
         box.addEventListener("change", function () {

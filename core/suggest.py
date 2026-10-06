@@ -1,7 +1,4 @@
-"""LLM 配对与字段建议的共享工具：批量配对视图与 AI 导入命令共用。
-
-从 views.py 平移而来，函数体保持不变，仅去下划线改公开名。
-"""
+"""LLM 配对与字段建议的共享工具：批量配对视图与 AI 导入命令共用。"""
 
 from . import vision
 from .attachments import KIND_LABELS

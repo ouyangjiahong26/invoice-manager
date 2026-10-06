@@ -1,7 +1,7 @@
 """条目操作留痕：快照常量、操作人捕获中间件、Item 信号处理器。
 
 留痕语义单点：任何 Item 保存/删除路径（视图、admin 表单、admin list_editable、
-shell）经信号统一落 AuditLog；操作人经 contextvar 从请求中间件传入。
+shell）经信号统一落 AuditLog。操作人经 contextvar 从请求中间件传入。
 
 附件不在 Item 表内，项目值先于附件保存，因此视图在改动附件前后调用
 `mark_attachments(item, after, before)` 注入快照，diff 仍由信号统一计算。
@@ -29,7 +29,7 @@ _actor_var = contextvars.ContextVar("audit_actor", default=None)
 
 
 def current_actor():
-    """当前请求的已登录用户；非请求路径（shell/级联）返回 None。"""
+    """当前请求的已登录用户。非请求路径（shell/级联）返回 None。"""
     return _actor_var.get()
 
 
@@ -49,7 +49,7 @@ class ActorMiddleware:
 
 
 def attachment_entry(attachment):
-    """单个附件的快照条目；允许未保存实例（file 取上传文件名）。"""
+    """单个附件的快照条目。允许未保存实例（file 取上传文件名）。"""
     return {
         "kind": attachment.kind,
         "kind_label": attachment.get_kind_display(),
@@ -73,7 +73,7 @@ def mark_attachments(item, after, before):
 
 
 def format_attachments(value):
-    """把附件快照渲染成一行文本；value 为列表（终值）或字符串（旧 → 新 diff）。"""
+    """把附件快照渲染成一行文本。value 为列表（终值）或字符串（由旧值改为新值的 diff）。"""
     if isinstance(value, str):
         return value
     if not value:
@@ -87,7 +87,7 @@ def _format_entry(entry):
 
 
 def _attachment_diff(old_entries, new_entries):
-    """"新增/删除/修改" 逐条列出；无变化返回空串。"""
+    """“新增/删除/修改”逐条列出。无变化返回空串。"""
     old_by_key = {(e["kind"], e["file"]): e for e in old_entries}
     new_by_key = {(e["kind"], e["file"]): e for e in new_entries}
     parts = [
@@ -103,7 +103,7 @@ def _attachment_diff(old_entries, new_entries):
         if old_entry is None:
             continue
         changed = [
-            f"{ATTACHMENT_LABELS[field]} {old_entry[field] or '空'} → {entry[field] or '空'}"
+            f"{ATTACHMENT_LABELS[field]} 由 {old_entry[field] or '空'} 改为 {entry[field] or '空'}"
             for field in ATTACHMENT_FIELDS
             if old_entry[field] != entry[field]
         ]
@@ -113,7 +113,7 @@ def _attachment_diff(old_entries, new_entries):
 
 
 def _snapshot(item):
-    """逐跟踪字段取值；attachments 取自注入值或库中附件。"""
+    """逐跟踪字段取值。attachments 取自注入值或库中附件。"""
     data = {}
     for field in SNAPSHOT_FIELDS:
         if field == "attachments":

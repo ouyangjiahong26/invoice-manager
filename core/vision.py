@@ -1,4 +1,4 @@
-"""票据识别：图片走视觉接口；PDF 先提文本，文本不足或解析为空则渲染成图再走视觉接口。
+"""票据识别：图片走视觉接口。PDF 先提文本，文本不足或解析为空则渲染成图再走视觉接口。
 
 凭据未配置或识别失败时返回空 dict，不阻塞上传。返回的 dict 含 "_source"
 （"text" 或 "image"），供页面显示识别来源。
@@ -90,16 +90,16 @@ def configured():
 
 
 def validate_upload(upload):
-    """返回错误文案；None 表示通过。"""
+    """返回错误文案。None 表示通过。"""
     if not (upload.name or "").lower().endswith(ALLOWED_EXTENSIONS):
         return "仅支持 jpg / jpeg / png / pdf 文件"
     if upload.size > MAX_FILE_BYTES:
-        return "单个文件不能超过 10MB"
+        return "单个文件不能超过 10 MB"
     return None
 
 
 def prefill(data, filename, kind):
-    """识别单个票据文件，返回回填字段 dict；失败返回 {}。"""
+    """识别单个票据文件，返回回填字段 dict。失败返回 {}。"""
     if not configured() or kind not in PROMPTS:
         return {}
     try:
@@ -112,7 +112,7 @@ def prefill(data, filename, kind):
 
 
 def detect(data, filename):
-    """判单个票据文件类型并提取字段，返回含 kind 的字段 dict；失败返回 {}。"""
+    """判单个票据文件类型并提取字段，返回含 kind 的字段 dict。失败返回 {}。"""
     if not configured():
         return {}
     try:
@@ -127,7 +127,7 @@ def detect(data, filename):
 def reread(data, filename, hints):
     """配对智能体定向重读（ADR-0008）：标准 detect 模式加针对性线索，返回同形状字段 dict。
 
-    hints 为给模型的补充线索文本（候选记录摘要、要重点核对的区域等）；失败返回 {}。
+    hints 为给模型的补充线索文本（候选记录摘要、要重点核对的区域等）。失败返回 {}。
     """
     if not configured():
         return {}
@@ -160,11 +160,11 @@ def _prefill_image(data, kind, prompt):
 
 
 def _prefill_pdf(data, kind, prompt):
-    """PDF：文本充足走文本接口；否则逐页渲染识别。
+    """PDF：文本充足走文本接口。否则逐页渲染识别。
 
-    多页同为一种票据时合并结果——支付/退款金额相加（一份账单 PDF 常含多笔支付，
+    多页同为一种票据时合并结果。支付/退款金额相加（一份账单 PDF 常含多笔支付，
     如 20260924 批次的 100+50+10 对一张 160 发票），发票金额取首个非空值（多页
-    通常是同一发票重复打印）；各页类型不一致时退回首个有效页的结果。
+    通常是同一发票重复打印）。各页类型不一致时退回首个有效页的结果。
     """
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         text = "\n".join(page.get_text() for page in doc).strip()
@@ -182,22 +182,31 @@ def _prefill_pdf(data, kind, prompt):
                 results.append(result)
     if not results:
         return {}
-    merged = _merge_page_results(results)
+    merged = _merge_page_results(results, kind)
     merged["_source"] = "image"
     return merged
 
 
-def _merge_page_results(results):
-    """合并逐页识别结果；各页类型不一致时返回首个有效页。"""
-    kinds = {result.get("kind") for result in results} - {"unknown", None}
-    if len(kinds) != 1:
-        return dict(results[0])
+def _merge_page_results(results, kind=None):
+    """合并逐页识别结果。各页类型不一致时返回首个有效页。
+
+    kind 为 detect 或缺省时按各页识别出的类型判定，否则按调用方指定类型合并
+    （prefill 路径的识别结果不含 kind 字段）。
+    """
+    if kind in (None, "detect"):
+        kinds = {result.get("kind") for result in results} - {"unknown", None}
+        if len(kinds) != 1:
+            return dict(results[0])
+        merged_kind = results[0].get("kind")
+    else:
+        merged_kind = kind
     merged = dict(results[0])
-    if merged.get("kind") in ("payment", "refund"):
+    if merged_kind in ("payment", "refund"):
         values = [result.get("amount") for result in results if result.get("amount") is not None]
         if values:
             merged["amount"] = round(sum(values), 2)
-    for key in ("order_no", "merchant_no", "invoice_no", "remark_order_no", "items_summary"):
+    for key in ("invoice_amount", "order_no", "merchant_no", "invoice_no", "remark_order_no",
+                "items_summary"):
         for result in results:
             if result.get(key):
                 merged[key] = result[key]
@@ -209,7 +218,7 @@ def _merge_page_results(results):
 
 
 def _recognize(parts, kind):
-    """调一次模型并解析，返回有意义的结果；失败/无意义返回 {}。"""
+    """调一次模型并解析，返回有意义的结果。失败/无意义返回 {}。"""
     content = _content(parts)
     if content is None:
         return {}
@@ -222,7 +231,7 @@ def _recognize(parts, kind):
 
 
 def _content(parts):
-    """调一次模型并返回回复正文；失败返回 None。"""
+    """调一次模型并返回回复正文。失败返回 None。"""
     response = _post({
         "model": settings.DEEPSEEK_MODEL,
         "messages": [{"role": "user", "content": parts}],
@@ -238,7 +247,7 @@ def _content(parts):
 
 
 def _post(payload):
-    """POST chat/completions，失败重试 1 次；不支持 thinking 参数时去掉并重试。"""
+    """POST chat/completions，失败重试 1 次。不支持 thinking 参数时去掉并重试。"""
     for attempt in (1, 2):
         request = urllib.request.Request(
             settings.DEEPSEEK_BASE_URL.rstrip("/") + "/chat/completions",
@@ -280,6 +289,8 @@ def _meaningful(kind, result):
                 or result.get("invoice_amount") is not None)
     if kind == "invoice":
         return result.get("invoice_amount") is not None or bool(result.get("invoice_no"))
+    if kind == "support":
+        return result.get("amount") is not None or bool(result.get("items_summary"))
     return result.get("amount") is not None or bool(result.get("order_no")) or bool(result.get("merchant_no"))
 
 
@@ -298,7 +309,7 @@ def _text(raw):
 
 
 def _load_json(content):
-    """解析回复正文为 JSON；非法时抛 ValueError。实测为纯 JSON，兜底剥离围栏。"""
+    """解析回复正文为 JSON。非法时抛 ValueError，兜底剥离围栏。"""
     text = (content or "").strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -308,7 +319,7 @@ def _load_json(content):
 
 
 def _parse_content(content, kind):
-    """解析回复正文为回填字段；JSON 非法时抛 ValueError。"""
+    """解析回复正文为回填字段。JSON 非法时抛 ValueError。"""
     data = _load_json(content)
     if kind == "invoice":
         return {
@@ -350,15 +361,17 @@ def _parse_content(content, kind):
 
 
 def group_suggest(records):
-    """LLM 兜底配对：records 为未配对记录摘要（{id, kind, amount, order_no, merchant_no,
-    remark_order_no}），返回可成组的 id 分组 [[id, ...], ...]；失败返回 []（退化为未配对
-    提示，不阻断）。"""
+    """LLM 兜底配对：records 为未配对记录摘要（suggest.pair_summary 形状：id、kind、amount、
+    order_no、merchant_no、remark_order_no、invoice_no、handwritten_notes、filename、
+    items_summary），返回可成组的 id 分组 [[id, ...], ...]。失败返回 []，退化为未配对
+    提示，不阻断。"""
     if not configured() or not records:
         return []
     prompt = (
         "以下是一批未能按单号自动配对的报销票据记录（kind：invoice 发票 / payment 支付 / "
         "refund 退款；amount 为金额，order_no 为平台单号，merchant_no 为商户单号，"
-        "remark_order_no 为发票备注单号，items_summary 为商品或订单摘要）。"
+        "remark_order_no 为发票备注单号，invoice_no 为发票号码，handwritten_notes 为手写标注，"
+        "filename 为文件名，items_summary 为商品或订单摘要）。"
         "按单号、金额与常识把能组成一条报销的记录归组：每组至少一张发票（invoice）和一笔支付"
         "（payment），退款（refund）挂到对应支付所在组。一笔支付可能对应多张发票（合并下单、"
         "分单开票），这些发票与该笔支付应归入同一组。归组前先核算金额：每组的发票金额合计"
@@ -392,8 +405,8 @@ def group_suggest(records):
 
 def field_suggest(groups, categories):
     """LLM 建议明细文案与类别：groups 为组成员摘要列表的列表（成员 {id, kind, amount,
-    items_summary}），categories 为 [{id, name, description}]；返回
-    {"suggestions": [{"title", "category_id"}]}（与组等长，无建议的位置为 None）；
+    items_summary}），categories 为 [{id, name, description}]。返回
+    {"suggestions": [{"title", "category_id"}]}（与组等长，无建议的位置为 None）。
     失败返回 {}（确认页字段留空手填）。"""
     if not configured() or not groups or not categories:
         return {}

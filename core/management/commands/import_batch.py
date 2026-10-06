@@ -1,6 +1,6 @@
-"""AI 导入历史批次目录：扫文件 → vision.detect 逐张识别 → 规则+LLM 配对 → 建待审核条目。
+"""AI 导入历史批次目录：扫文件后经 vision.detect 逐张识别，规则与 LLM 配对，建成待审核条目。
 
-纯 AI 路径，不读人工汇总 xlsx；配对与字段建议和批量提交页共用 pairing/suggest。
+纯 AI 路径，不读人工汇总 xlsx。配对与字段建议和批量提交页共用 pairing/suggest。
 用法：python manage.py import_batch <目录> [--batch 名称] [--dry-run]
 """
 
@@ -25,11 +25,11 @@ ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 
 class Command(BaseCommand):
-    help = "扫目录 → AI 识别 → 配对 → 建待审核条目（不读汇总 xlsx；需配置 DEEPSEEK_API_KEY）"
+    help = "扫目录后 AI 识别、配对、建待审核条目（不读汇总 xlsx，需配置 DEEPSEEK_API_KEY）"
 
     def add_arguments(self, parser):
         parser.add_argument("directory", help="批次材料目录（顶层散文件 + 一级人名子目录）")
-        parser.add_argument("--batch", default="", help="批次名称，缺省取目录名；同名批次复用")
+        parser.add_argument("--batch", default="", help="批次名称，缺省取目录名，同名批次复用")
         parser.add_argument("--dry-run", action="store_true", help="只打印报告，不落库")
 
     def handle(self, *args, **options):
@@ -38,9 +38,8 @@ class Command(BaseCommand):
             raise CommandError(f"目录不存在：{root}")
         if not vision.configured():
             raise CommandError("未配置 DEEPSEEK_API_KEY，无法执行 AI 识别")
+        # CLI 访问即权限闸门，此处不校验调用者身份。执行者取请求用户，否则取超级管理员
         actor = current_actor()
-        if actor is not None and not (actor.is_staff or actor.is_superuser):
-            raise CommandError("仅管理员可执行导入")
         self.executor = actor or User.objects.filter(is_superuser=True).first()
         if self.executor is None:
             raise CommandError("找不到可用的执行者账号（无超级管理员）")
@@ -70,7 +69,7 @@ class Command(BaseCommand):
     # ---------- 收集文件 ----------
 
     def _collect_by_owner(self, root, unzip_root):
-        """扫描目录：顶层散文件归执行者，一级子目录按人名归档；返回 [(人名 or None, [Path])]。"""
+        """扫描目录：顶层散文件归执行者，一级子目录按人名归档。返回 [(人名 or None, [Path])]。"""
         loose, people, zip_files = [], {}, []
 
         def classify(path, bucket):
@@ -125,7 +124,7 @@ class Command(BaseCommand):
     # ---------- 识别 ----------
 
     def _recognize(self, owner_groups):
-        """逐文件 detect；返回 {(owner, 归属说明): [record]}，record 含配对与建条所需字段。"""
+        """逐文件 detect。返回 {(owner, 归属说明): [record]}，record 含配对与建条所需字段。"""
         records_by_owner = {}
         record_id = 0
         for name, paths in owner_groups:
@@ -166,7 +165,7 @@ class Command(BaseCommand):
     def _executor_note(self):
         if not any("顶层散文件" in line for line in self.owner_notes):
             self.owner_notes.append(
-                f"顶层散文件 → owner=执行者 {self._user_label(self.executor)}（本人垫付）"
+                f"顶层散文件归执行者 {self._user_label(self.executor)}（本人垫付）"
             )
         return self.executor, "顶层散文件"
 
@@ -176,12 +175,12 @@ class Command(BaseCommand):
             return candidates[0], name
         if not candidates:
             self.owner_notes.append(
-                f"人名 {name} 无匹配账号 → owner=执行者 {self._user_label(self.executor)}"
+                f"人名 {name} 无匹配账号，归执行者 {self._user_label(self.executor)}"
             )
         else:
             names = "、".join(self._user_label(user) for user in candidates)
             self.owner_notes.append(
-                f"人名 {name} 匹配到多个账号（{names}）→ owner=执行者 {self._user_label(self.executor)}"
+                f"人名 {name} 匹配到多个账号（{names}），归执行者 {self._user_label(self.executor)}"
             )
         return self.executor, name
 

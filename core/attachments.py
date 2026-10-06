@@ -1,14 +1,21 @@
-"""附件构造与解析的共享工具：视图与 AI 导入命令共用。
-
-从 views.py 平移而来，函数体保持不变，仅去下划线改公开名。
-"""
+"""附件构造与解析的共享工具：视图与 AI 导入命令共用。"""
 
 import json
 from decimal import Decimal, InvalidOperation
 
-from .models import Attachment
+from .models import Attachment, Category
 
 KIND_LABELS = dict(Attachment.KIND_CHOICES)
+
+
+def category_help_text():
+    """类别下拉的参考说明：类别名加说明拼一行，多类用分号连接（表单与批量页共用）。"""
+    notes = [
+        f"{category.name}：{category.description}"
+        for category in Category.objects.all()
+        if category.description
+    ]
+    return "；".join(notes)
 
 
 def attachment_groups(item):
@@ -20,7 +27,7 @@ def attachment_groups(item):
 
 
 def build_attachment(kind, upload, fields):
-    """按字段 dict 构造未保存的 Attachment；金额非法抛 ValueError。
+    """按字段 dict 构造未保存的 Attachment。金额非法抛 ValueError。
 
     fields 取值兼容字符串（单条表单 POST）与 JSON 值（批量 plan）。
     """
@@ -67,7 +74,7 @@ def decimal_or_none(raw):
 
 
 def plan_decimal(raw, label):
-    """解析分组计划金额并按 DecimalField(max_digits=10, decimal_places=2) 限位；
+    """解析分组计划金额并按 DecimalField(max_digits=10, decimal_places=2) 限位。
     None/空串返回 None（可选金额用），非法抛 ValueError，文案直接拼进 400 响应。"""
     if raw is None or raw == "":
         return None

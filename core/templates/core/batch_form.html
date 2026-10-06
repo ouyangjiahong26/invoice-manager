@@ -11,7 +11,7 @@
   <div class="attach-block">
     <label for="batch-upload" style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">混合上传票据文件（发票 / 支付记录 / 退款记录 / 证明材料）</label>
     <input type="file" id="batch-upload" multiple accept=".jpg,.jpeg,.png,.pdf">
-    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组；规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）。证明材料（充值/消费流水、回单等）不参与配对与金额合计，识别后在未配对区用"加入"挂到对应组；其余未配对文件不生成条目。</div>
+    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组。规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）。证明材料（充值/消费流水、回单等）不参与配对与金额合计，识别后在未配对区用“加入”挂到对应组。其余未配对文件不生成条目。</div>
   </div>
 
   <div class="attach-grid" id="file-cards"></div>
@@ -124,7 +124,7 @@
   if (!uploadInput) return;  // 未配置识别服务时不初始化
   var KIND_LABELS = {invoice: "发票", payment: "支付记录", refund: "退款记录", support: "证明材料", unknown: "未识别"};
   var AMOUNT_LABELS = {invoice: "发票金额（元）", payment: "支付金额（元）", refund: "退款金额（元）", support: "流水金额（元，选填）", unknown: "金额（元）"};
-  var AMOUNT_TOLERANCE = 0.005;  // 与 core/validation.py 的 AMOUNT_TOLERANCE 一致
+  var groupCheckUrl = "{% url 'batch_group_check' %}";
   var FIELD_DEFS = {
     invoice: [
       {role: "invoice_no", label: "发票号码"},
@@ -293,7 +293,7 @@
     if (paired) renderGroups();
   }
 
-  // 上传后首识：调 batch_detect 判类型并回填；失败停在 unknown，可手动改类型或忽略
+  // 上传后首识：调 batch_detect 判类型并回填。失败停在 unknown，可手动改类型或忽略
   function detectCard(card) {
     detecting++;
     return fetch(detectUrl, {
@@ -324,7 +324,7 @@
   // 手动切换类型：调现有单条识别端点按新类型重识别
   function switchKind(card, kind) {
     renderKindFields(card, kind);
-    // 金额框为各类型共享：旧值属于旧口径，清空待重识别回填或手填
+    // 金额框按类型共享，切类型后清空，待重识别回填或手填
     card.querySelector('[data-role="amount"]').value = "";
     detecting++;
     status(card, "重新识别中…");
@@ -365,6 +365,7 @@
   function afterCardEdit() {
     refreshSummary();
     if (paired) renderGroups();
+    if (paired) scheduleGroupCheck();
   }
 
   function refreshSummary() {
@@ -499,7 +500,7 @@
     });
   }
 
-  // 智能体分轮循环（ADR-0008）：每轮一个请求，逐轮渲染动作；至多 3 轮或服务端 done
+  // 智能体分轮循环（ADR-0008）：每轮一个请求，逐轮渲染动作。轮次上限由服务端下发
   function runAgentRounds() {
     document.getElementById("agent-entry").hidden = false;
     var button = document.getElementById("agent-button");
@@ -520,7 +521,7 @@
         applyRecords(data.records);
         buildState(data || {});
         renderGroups();
-        if (data.done || agentRounds >= 3 || !unresolvedLeft()) {
+        if (data.done || agentRounds >= (data.max_rounds || 1) || !unresolvedLeft()) {
           logLine("智能体结束：成组 " + groups.length + "，待确认 " + pendingGroups.length
             + "，单边发票 " + soloCount() + "，未配对 " + unmatched.length, true);
           button.textContent = "智能体补配";
@@ -647,6 +648,7 @@
     input.addEventListener("input", function () {
       onChange(this.value);
       renderSubmit();
+      scheduleGroupCheck();
     });
     wrap.appendChild(input);
     return wrap;
@@ -667,28 +669,21 @@
     return select;
   }
 
+  // 对账结论 state 由服务端校验接口给出，这里只按 key 选文案
+  var STATE_TEXTS = {
+    solo: ["单边发票组：缺支付记录，实付款按 0.00 提交，审核不通过后从看板补传支付记录", "warn"],
+    no_invoice: ["缺发票，不能提交", "warn"],
+    mismatch: ["两侧金额不一致，请核对（小额优惠/抹零差异可照常提交）", "warn"],
+    ok: ["金额互证一致", "ok"]
+  };
   function updateGroupLine(group) {
     var sums = groupSums(group);
     var el = group.lineEl;
     if (!el) return sums;
-    var members = groupMembers(group);
-    var hasInvoice = members.some(function (c) { return kindOf(c) === "invoice"; });
-    var hasPayment = members.some(function (c) { return kindOf(c) === "payment"; });
     var text = "发票合计 ¥" + sums.invoice.toFixed(2) + " · 支付−退款 ¥" + sums.net.toFixed(2);
-    if (isSolo(group)) {
-      text += "；单边发票组：缺支付记录，实付款按 0.00 提交，审核不通过后从看板补传支付记录";
-      el.className = "reconcile warn";
-    } else if (!hasInvoice || !hasPayment) {
-      text += "；缺少" + (hasInvoice ? "支付记录" : "发票") + "，不能提交";
-      el.className = "reconcile warn";
-    } else if (Math.abs(sums.invoice - sums.net) > AMOUNT_TOLERANCE) {
-      text += "；两侧金额不一致，请核对（小额优惠/抹零差异可照常提交）";
-      el.className = "reconcile warn";
-    } else {
-      text += "；金额互证一致";
-      el.className = "reconcile ok";
-    }
-    el.textContent = text;
+    var state = STATE_TEXTS[group.state] || STATE_TEXTS.ok;
+    el.className = "reconcile " + state[1];
+    el.textContent = text + "：" + state[0];
     return sums;
   }
 
@@ -718,7 +713,7 @@
 
     var fields = document.createElement("div");
     fields.className = "group-fields";
-    // 成员增减或卡片金额修改后重算合计预填；单边发票组净额为 0 同样适用
+    // 成员增减或卡片金额修改后重算合计预填。单边发票组净额为 0 同样适用
     group.actual = sums.net.toFixed(2);
     group.invoice = sums.invoice.toFixed(2);
     fields.appendChild(fieldInput("明细", "text", group.title, function (v) { group.title = v; }));
@@ -739,6 +734,7 @@
     catSelect.addEventListener("change", function () {
       group.categoryId = this.value;
       renderSubmit();
+      scheduleGroupCheck();
     });
     catLabel.appendChild(catSelect);
     fields.appendChild(catLabel);
@@ -886,34 +882,63 @@
     });
   }
 
-  // 组未满足提交条件的原因清单（行内提示与提交反馈共用；空数组即可提交）
+  // 组待补事项与对账结论由服务端校验接口给出（规则本体在 core/validation.py）
   function groupIssues(group) {
-    var members = groupMembers(group);
-    var issues = [];
-    if (members.some(function (c) { return kindOf(c) === "unknown"; }))
-      issues.push("含未识别类型的文件，请先在上方卡片改对类型或移出");
-    if (!members.some(function (c) { return kindOf(c) === "invoice"; }))
-      issues.push("缺发票");
-    if (!isSolo(group) && !members.some(function (c) { return kindOf(c) === "payment"; }))
-      issues.push("缺支付记录");
-    if (!(group.title || "").trim()) issues.push("缺明细");
-    if (!String(group.categoryId || "").trim()) issues.push("缺类别");
-    if (!isSolo(group) && (!(group.actual || "").trim() || isNaN(parseFloat(group.actual))))
-      issues.push("缺实付款");
-    return issues;
+    return group.issues || [];
   }
 
   function groupValid(group) {
     return groupIssues(group).length === 0;
   }
 
-  // 组内红字提示：随明细/类别/实付款输入实时刷新（renderSubmit 时机）
+  // 组内红字提示：渲染服务端返回的待补事项（checkGroups 回调时机）
   function updateGroupIssues(group, index) {
     var el = group.issuesEl;
     if (!el) return;
     var issues = groupIssues(group);
     el.hidden = !issues.length;
-    el.textContent = issues.length ? "组 " + (index + 1) + " 待补：" + issues.join("；") : "";
+    el.textContent = issues.length ? "组 " + (index + 1) + " 待补：" + issues.join("、") : "";
+  }
+
+  var groupCheckTimer = null;
+  function checkGroups() {
+    fetch(groupCheckUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
+      body: JSON.stringify({
+        groups: groups.map(function (group) {
+          return {
+            title: group.title || "",
+            category: group.categoryId || "",
+            actual_amount: group.actual || "",
+            files: groupMembers(group).map(function (card) {
+              return {
+                kind: kindOf(card),
+                amount: number(card),
+                order_no: value(card, "order_no"),
+                ocr: card._ocr && Object.keys(card._ocr).length ? JSON.stringify(card._ocr) : ""
+              };
+            })
+          };
+        })
+      })
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        (data.groups || []).forEach(function (result, i) {
+          if (!groups[i]) return;
+          groups[i].issues = result.issues || [];
+          groups[i].state = result.state;
+        });
+        renderSubmit();
+      })
+      .catch(function () {});
+  }
+  function scheduleGroupCheck() {
+    clearTimeout(groupCheckTimer);
+    groupCheckTimer = setTimeout(checkGroups, 400);
   }
 
   function renderSubmit() {
@@ -947,6 +972,7 @@
     renderPending();
     renderUnmatched();
     renderSubmit();
+    scheduleGroupCheck();
   }
 
   document.getElementById("submit-button").addEventListener("click", function () {
@@ -955,14 +981,14 @@
       showError("没有可提交的组：请从待确认组设为新组，或从未配对区新建组。");
       return;
     }
-    // 点了不满足条件就明确说出每组缺什么，并定位到第一个问题组（不再只靠 hover title）
+    // 点击时列出每组缺什么，并定位到第一个问题组
     var problems = [];
     groups.forEach(function (group, i) {
       var issues = groupIssues(group);
-      if (issues.length) problems.push("组 " + (i + 1) + "：" + issues.join("；"));
+      if (issues.length) problems.push("组 " + (i + 1) + "：" + issues.join("、"));
     });
     if (problems.length) {
-      showError("还有 " + problems.length + " 个组待补——" + problems.join("；") + "。");
+      showError("还有 " + problems.length + " 个组待补：" + problems.join("；") + "。");
       var first = groups.findIndex(function (group) { return !groupValid(group); });
       var card = document.querySelectorAll("#group-list .group-card")[first];
       if (card) {
@@ -1002,7 +1028,7 @@
       body: JSON.stringify({session_id: sessionId, groups: planGroups})
     })
       .then(function (resp) {
-        // 成功走 302 → 看板：manual 不跟随跳转，保住 messages 只在落地页渲染一次
+        // 成功后 302 跳到看板：manual 不跟随跳转，保住 messages 只在落地页渲染一次
         if (resp.type === "opaqueredirect") {
           window.location.href = boardUrl;
           return null;
