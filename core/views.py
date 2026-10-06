@@ -21,12 +21,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from . import pairing, staging, stamping, vision
-from .attachments import KIND_LABELS, attachment_groups, build_attachment, decimal_or_none, plan_decimal
+from .attachments import (KIND_LABELS, attachment_groups, build_attachment, category_help_text,
+                         decimal_or_none, ocr_value, plan_decimal)
 from .audit import attachment_entries, attachment_entry, mark_attachments
 from .forms import AttachmentForm, ItemPanelForm
 from .models import Attachment, Batch, Category, Item
 from .suggest import category_payloads, llm_merge_groups, pair_summary, suggest_member
-from .validation import check_item
+from .validation import batch_group_issues, batch_group_state, check_item, check_values
 from .vision import prefill as vision_prefill, validate_upload
 
 STATUS_FILTERS = {Item.STATUS_PENDING, Item.STATUS_APPROVED, Item.STATUS_REJECTED}
@@ -45,6 +46,26 @@ def _is_fetch(request):
     return request.headers.get("x-requested-with") == "fetch"
 
 
+def _json_payload(request):
+    """请求体解析为 dict。非法 JSON 抛 ValueError，非 dict 归一为 {}（缺字段由各接口判 400）。"""
+    try:
+        payload = json.loads(request.body or "{}")
+    except ValueError:
+        raise ValueError("请求体不是合法 JSON")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pk_value(value):
+    """JSON 里的主键值归一为正整数。接受正整数与数字串（前端 select 值是字符串），其余返回 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def _first_error(form, errors):
     for error in errors:
         return error
@@ -56,7 +77,7 @@ def _first_error(form, errors):
 
 @login_required
 def board(request):
-    """表格主视图：按批次展示全部条目，序号=该批 approved 条目的导出序号；筛选/行内编辑/拖拽调序由前端承载。"""
+    """表格主视图：按批次展示全部条目，序号=该批 approved 条目的导出序号。筛选、行内编辑、拖拽调序由前端承载。"""
     batches = Batch.objects.all()
     current = None
     batch_id = request.GET.get("batch", "")
@@ -167,8 +188,7 @@ def item_create(request):
 @login_required
 def item_update(request, pk):
     item = get_object_or_404(Item, pk=pk)
-    if item.owner_id != request.user.id and not request.user.is_staff:
-        raise PermissionDenied("只能修改自己的条目")
+    _owned_item(request, item)
     _reject_archived(item)
     if request.method == "POST":
         form = ItemPanelForm(request.POST, request.FILES, instance=item, staff=request.user.is_staff)
@@ -231,17 +251,16 @@ def item_panel(request, pk):
 @login_required
 @require_POST
 def item_field_update(request, pk):
-    """表格行内单字段保存；状态/付款人仅 staff。"""
+    """表格行内单字段保存。状态/付款人仅 staff。"""
     item = get_object_or_404(Item, pk=pk)
-    if item.owner_id != request.user.id and not request.user.is_staff:
-        raise PermissionDenied("只能修改自己的条目")
+    _owned_item(request, item)
     _reject_archived(item)
     try:
-        payload = json.loads(request.body or "{}")
-    except ValueError:
-        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
-    field = payload.get("field") if isinstance(payload, dict) else None
-    value = payload.get("value") if isinstance(payload, dict) else None
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    field = payload.get("field")
+    value = payload.get("value")
 
     student_fields = {"title", "category", "actual_amount", "invoice_amount"}
     staff_fields = {"status", "owner"}
@@ -254,7 +273,7 @@ def item_field_update(request, pk):
         if field == "title":
             item.title = str(value or "").strip()[:200]
         elif field == "category":
-            category = Category.objects.filter(pk=value).first()
+            category = Category.objects.filter(pk=_pk_value(value)).first()
             if category is None:
                 return JsonResponse({"error": "类别无效"}, status=400)
             item.category = category
@@ -269,7 +288,7 @@ def item_field_update(request, pk):
                 return JsonResponse({"error": "状态无效"}, status=400)
             item.status = value
         elif field == "owner":
-            owner = User.objects.filter(pk=value, is_active=True).first()
+            owner = User.objects.filter(pk=_pk_value(value), is_active=True).first()
             if owner is None:
                 return JsonResponse({"error": "付款人无效"}, status=400)
             item.owner = owner
@@ -288,11 +307,11 @@ def item_reorder(request):
     if not request.user.is_staff:
         raise PermissionDenied("只有管理员可以调整顺序")
     try:
-        payload = json.loads(request.body or "{}")
-    except ValueError:
-        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
-    order = payload.get("order") if isinstance(payload, dict) else None
-    category = Category.objects.filter(pk=payload.get("category")).first() if isinstance(payload, dict) else None
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    order = payload.get("order")
+    category = Category.objects.filter(pk=_pk_value(payload.get("category"))).first()
     if category is None or not isinstance(order, list) or not order:
         return JsonResponse({"error": "参数无效"}, status=400)
     pks = []
@@ -329,8 +348,7 @@ def item_reorder(request):
 @require_POST
 def item_delete(request, pk):
     item = get_object_or_404(Item, pk=pk)
-    if item.owner_id != request.user.id and not request.user.is_staff:
-        raise PermissionDenied("只能删除自己的条目")
+    _owned_item(request, item, message="只能删除自己的条目")
     _reject_archived(item)
     mark_attachments(item, attachment_entries(item), [])
     item.delete()
@@ -409,7 +427,8 @@ def prefill(request):
         return JsonResponse({"error": "缺少 file 字段"}, status=400)
     kind = request.POST.get("kind", "")
     if kind not in KIND_LABELS:
-        return JsonResponse({"error": "kind 必须是 invoice/payment/refund"}, status=400)
+        allowed = "、".join(KIND_LABELS)
+        return JsonResponse({"error": f"kind 必须是 {allowed}"}, status=400)
     error = validate_upload(upload)
     if error:
         return JsonResponse({"error": error}, status=400)
@@ -418,13 +437,11 @@ def prefill(request):
 
 @login_required
 def batch_create(request):
-    """批量配对提交页：混合上传 → 识别 → 配对 → 确认创建。"""
-    categories = Category.objects.all()
-    notes = [f"{category.name}：{category.description}" for category in categories if category.description]
+    """批量配对提交页：混合上传后依次识别、配对、确认创建。"""
     return render(request, "core/batch_form.html", {
         "vision_configured": vision.configured(),
         "categories": category_payloads(),
-        "category_notes": "；".join(notes),
+        "category_notes": category_help_text(),
     })
 
 
@@ -446,7 +463,7 @@ def batch_stage(request):
 
 
 def _session_and_file(request, payload):
-    """从请求体解析配对会话与文件路径；非法抛 ValueError（文案可直接进 400）。"""
+    """从请求体解析配对会话与文件路径。非法抛 ValueError（文案可直接进 400）。"""
     session = staging.session_dir(payload.get("session_id"), request.user.id)
     return session, staging.file_path(session, payload.get("file_id"))
 
@@ -456,9 +473,9 @@ def _session_and_file(request, payload):
 def batch_detect(request):
     """批量页逐张识别（读配对会话暂存）：判类型并提取字段，不落库。"""
     try:
-        payload = json.loads(request.body or "{}")
-    except ValueError:
-        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
     try:
         _, path = _session_and_file(request, payload)
     except ValueError as exc:
@@ -467,7 +484,7 @@ def batch_detect(request):
 
 
 def _parse_records(raw_records):
-    """解析前端提交的记录列表为配对输入；结构非法抛 ValueError（文案）。"""
+    """解析前端提交的记录列表为配对输入。结构非法抛 ValueError（文案）。"""
     if not isinstance(raw_records, list):
         raise ValueError("缺少 records 列表")
     records = []
@@ -499,7 +516,7 @@ def _json_records(records):
 
 
 def _solo_groups(unmatched, by_id):
-    """未配对发票按发票号码聚成单边发票组（同号重复拍摄同组）；返回 (solo, 剩余 unmatched)。"""
+    """未配对发票按发票号码聚成单边发票组（同号重复拍摄同组）。返回 (solo, 剩余 unmatched)。"""
     solos, rest = {}, []
     for entry in unmatched:
         record = by_id.get(entry["id"])
@@ -525,7 +542,7 @@ def _pair_records(records):
 
 
 def _field_suggestions(groups, by_id):
-    """成组记录的明细/类别建议；未配置或无组返回空 dict。"""
+    """成组记录的明细/类别建议。未配置或无组返回空 dict。"""
     if vision.configured() and groups:
         return vision.field_suggest(
             [[suggest_member(by_id[rid]) for rid in group] for group in groups], category_payloads()
@@ -538,9 +555,9 @@ def _field_suggestions(groups, by_id):
 def batch_pair(request):
     """规则配对 + LLM 兜底 + 单边发票组提取：返回分组、待确认、单边发票组、未配对与字段建议。"""
     try:
-        payload = json.loads(request.body or "{}")
-    except ValueError:
-        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
     try:
         staging.session_dir(payload.get("session_id"), request.user.id)
         records = _parse_records(payload.get("records"))
@@ -581,13 +598,13 @@ def _unresolved_ids(pending, solo, unmatched, by_id):
 def batch_agent_round(request):
     """配对智能体一轮（ADR-0008）：定向重读未决文件，合并修正字段后重跑配对。
 
-    请求 {session_id, records}；返回 {actions, records, groups, pending, solo, unmatched,
+    请求 {session_id, records}。返回 {actions, records, groups, pending, solo, unmatched,
     suggestions, done}。done = 无未决发票/支付，或本轮重读没有任何字段改善（提前止损）。
     """
     try:
-        payload = json.loads(request.body or "{}")
-    except ValueError:
-        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
     try:
         session = staging.session_dir(payload.get("session_id"), request.user.id)
         records = _parse_records(payload.get("records"))
@@ -626,7 +643,7 @@ def batch_agent_round(request):
         for key in _AGENT_FIELDS:
             new = updated.get(key)
             if new not in (None, "") and new != record.get(key):
-                diffs.append(f"{key}：{record.get(key) or '空'} → {new}")
+                diffs.append(f"{key}：由 {record.get(key) or '空'} 改为 {new}")
                 record[key] = new
         if diffs:
             changed = True
@@ -645,22 +662,91 @@ def batch_agent_round(request):
         "unmatched": unmatched,
         "suggestions": _field_suggestions(groups, by_id),
         "done": not changed or not still_open,
+        "max_rounds": AGENT_MAX_ROUNDS,
     })
+
+
+def _draft_attachment(entry):
+    """批量校验用的未保存附件草稿（只带规则要看的字段）。"""
+    kind = entry.get("kind") if isinstance(entry, dict) else None
+    raw = entry if isinstance(entry, dict) else {}
+    try:
+        amount = decimal_or_none(raw.get("amount"))
+    except Exception:
+        amount = None
+    return SimpleNamespace(kind=kind, amount=amount, order_no=raw.get("order_no") or "",
+                           file=None, ocr_data=ocr_value(raw.get("ocr")))
+
+
+@require_POST
+@login_required
+def batch_group_check(request):
+    """批量预览的组校验：返回待补事项与对账结论，规则本体在 core.validation。
+
+    请求 {groups: [{title, category, actual_amount, files: [{kind, amount, ...}]}]}，
+    返回 {groups: [{issues, state}]}。前端只渲染结果，不做判定。
+    """
+    try:
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    raw_groups = payload.get("groups")
+    if not isinstance(raw_groups, list):
+        return JsonResponse({"error": "缺少 groups 列表"}, status=400)
+    results = []
+    for group in raw_groups:
+        if not isinstance(group, dict):
+            results.append({"issues": ["组信息无效"], "state": "no_invoice"})
+            continue
+        entries = group.get("files") if isinstance(group.get("files"), list) else []
+        drafts = [_draft_attachment(entry) for entry in entries]
+        kinds = [draft.kind for draft in drafts]
+        try:
+            actual_amount = plan_decimal(group.get("actual_amount"), "实付金额")
+        except ValueError as exc:
+            results.append({"issues": [str(exc)], "state": batch_group_state(kinds, drafts)})
+            continue
+        results.append({
+            "issues": batch_group_issues(kinds, group.get("title"),
+                                         _pk_value(group.get("category")), actual_amount),
+            "state": batch_group_state(kinds, drafts),
+        })
+    return JsonResponse({"groups": results})
+
+
+@require_POST
+@login_required
+def item_draft_check(request):
+    """条目草稿核对：返回 check_values 的警告列表，前端不再重算规则本体。
+
+    请求 {actual_amount, invoice_amount, attachments: [{kind, amount, order_no, ocr}]}。
+    """
+    try:
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    raw_attachments = payload.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return JsonResponse({"error": "缺少 attachments 列表"}, status=400)
+    drafts = [_draft_attachment(entry) for entry in raw_attachments]
+    return JsonResponse({"warnings": check_values(
+        drafts, decimal_or_none(payload.get("actual_amount")),
+        decimal_or_none(payload.get("invoice_amount")))})
 
 
 @require_POST
 @login_required
 def batch_submit(request):
-    """按确认后的分组计划一次性创建待审核条目；文件取自配对会话暂存（ADR-0008）。
+    """按确认后的分组计划一次性创建待审核条目。文件取自配对会话暂存（ADR-0008）。
 
     单边发票组放行：无支付记录时实付款强制 0.00（条目自带缺支付警告，审核不通过后
-    学生从看板补传支付记录）；单边支付组仍整体拒绝。任一校验失败不建任何条目。
+    学生从看板补传支付记录）。单边支付组仍整体拒绝。任一校验失败不建任何条目。
     """
     try:
-        payload = json.loads(request.body or "{}")
-    except ValueError:
-        return JsonResponse({"error": "请求体不是合法 JSON"}, status=400)
-    raw_groups = payload.get("groups") if isinstance(payload, dict) else None
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    raw_groups = payload.get("groups")
     if not isinstance(raw_groups, list) or not raw_groups:
         return JsonResponse({"error": "缺少分组计划"}, status=400)
     try:
@@ -678,26 +764,28 @@ def batch_submit(request):
         if not isinstance(group, dict):
             return JsonResponse({"error": f"第 {number} 组信息无效"}, status=400)
         title = str(group.get("title") or "").strip()[:200]
-        if not title:
-            return JsonResponse({"error": f"第 {number} 组缺少明细"}, status=400)
-        category = Category.objects.filter(pk=group.get("category")).first()
-        if category is None:
-            return JsonResponse({"error": f"第 {number} 组类别无效"}, status=400)
+        category_id = _pk_value(group.get("category"))
         try:
             actual_amount = plan_decimal(group.get("actual_amount"), "实付金额")
             invoice_amount = plan_decimal(group.get("invoice_amount"), "发票金额")
         except ValueError as exc:
             return JsonResponse({"error": f"第 {number} 组{exc}"}, status=400)
         entries = group.get("files")
-        if not isinstance(entries, list) or not entries:
+        if not isinstance(entries, list):
             return JsonResponse({"error": f"第 {number} 组缺少文件"}, status=400)
+        issues = batch_group_issues(
+            [entry.get("kind") if isinstance(entry, dict) else None for entry in entries],
+            title, category_id, actual_amount)
+        if issues:
+            return JsonResponse({"error": f"第 {number} 组" + "、".join(issues)}, status=400)
+        category = Category.objects.filter(pk=category_id).first()
+        if category is None:
+            return JsonResponse({"error": f"第 {number} 组类别无效"}, status=400)
         attachments, kinds = [], set()
         for entry in entries:
             if not isinstance(entry, dict):
                 return JsonResponse({"error": f"第 {number} 组文件信息无效"}, status=400)
             kind = entry.get("kind")
-            if kind not in KIND_LABELS:
-                return JsonResponse({"error": f"第 {number} 组含未识别类型的文件，请先修正类型"}, status=400)
             try:
                 path = staging.file_path(session, entry.get("file_id"))
             except ValueError as exc:
@@ -715,16 +803,8 @@ def batch_submit(request):
                     opened_handle.close()
                 return JsonResponse({"error": f"{name}：{exc}"}, status=400)
             kinds.add(kind)
-        if Attachment.KIND_INVOICE not in kinds:
-            for opened_handle in opened:
-                opened_handle.close()
-            return JsonResponse({"error": f"第 {number} 组缺少发票，无法报销"}, status=400)
         if Attachment.KIND_PAYMENT not in kinds:
             actual_amount = Decimal("0.00")  # 单边发票组：等补传支付记录后再修订
-        elif actual_amount is None:
-            for opened_handle in opened:
-                opened_handle.close()
-            return JsonResponse({"error": f"第 {number} 组缺少实付金额"}, status=400)
         prepared.append((title, category, actual_amount, invoice_amount, attachments))
 
     try:
@@ -760,17 +840,23 @@ def _reject_archived(item):
     if item.batch.archived:
         raise PermissionDenied("已存档批次不可修改")
 
+
+def _owned_item(request, item, message="只能修改自己的条目"):
+    """条目归属检查：本人或 staff 可改，否则 403。"""
+    if item.owner_id != request.user.id and not request.user.is_staff:
+        raise PermissionDenied(message)
+
+
 def _owned_attachment(request, pk):
     attachment = get_object_or_404(Attachment, pk=pk)
-    if attachment.item.owner_id != request.user.id and not request.user.is_staff:
-        raise PermissionDenied("只能修改自己的条目")
+    _owned_item(request, attachment.item)
     if attachment.item.batch.archived:
         raise PermissionDenied("已存档批次不可修改")
     return attachment
 
 
 def _collect_new_attachments(request):
-    """从 POST 的文件与同名前缀字段构造未保存的 Attachment；返回 (附件, 错误文案)。"""
+    """从 POST 的文件与同名前缀字段构造未保存的 Attachment。返回 (附件, 错误文案)。"""
     attachments, errors = [], []
     for field, prefix, kind in UPLOAD_FIELDS:
         for index, upload in enumerate(request.FILES.getlist(field)):
@@ -861,6 +947,9 @@ def export_excel(request):
             row = ws.max_row
             amount_cell = ws.cell(row=row, column=4)
             amount_cell.number_format = AMOUNT_FORMAT
+            # 明细、类别、付款人是用户文本，强制文本单元格，防 = 开头被 Excel 当公式执行
+            for col in (2, 3, 5):
+                ws.cell(row=row, column=col).data_type = "s"
             # 多张附件时超链接指向首张，完整材料走 zip 导出（ADR-0005）
             if item.first_payment is not None:
                 ws.cell(row=row, column=6).hyperlink = request.build_absolute_uri(
@@ -940,7 +1029,7 @@ def export_zip(request):
 def session_check(request):
     """nginx auth_request 子请求（跨子域名共享 session，如 mineru.cislunarspace.cn）。
 
-    已登录返回 204，未登录返回 401；由边缘 nginx 将 401 重定向到统一登录页。
+    已登录返回 204，未登录返回 401。由边缘 nginx 将 401 重定向到统一登录页。
     """
     if request.user.is_authenticated:
         return HttpResponse(status=204)

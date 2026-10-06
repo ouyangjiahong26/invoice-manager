@@ -1,10 +1,10 @@
-"""导出票据标注：附件字节 → 盖红色标记的 PDF。
+"""导出票据标注：把附件字节标注成盖红色标记的 PDF。
 
 规格来自人工批次处理流程（共享盘 20260924 课题组报销 处理脚本.py）：
 条目导出序号盖在该条目全部附件每一页左下角（22pt hebo），各支付记录的
 平台单号逐行写在第一张发票附件首页序号上方（8.5pt china-s，前缀称谓对齐
 支付平台截图字段名），图片附件先转单页 PDF（150dpi 换算页宽）。
-只处理内存字节，不碰 ORM 与文件系统；任何一步失败返回 None，
+只处理内存字节，不碰 ORM 与文件系统。任何一步失败返回 None，
 调用方降级把原文件放入导出包（详见 CONTEXT.md 票据标注）。
 """
 
@@ -14,13 +14,13 @@ from django.conf import settings
 from .validation import IMAGE_SUFFIXES
 
 RED = (1, 0, 0)
-# 单号前缀称谓对齐支付平台截图里的字段名，方便秘书逐字核对；判不出平台时兜底
+# 单号前缀称谓对齐支付平台截图里的字段名，方便秘书逐字核对。判不出平台时兜底
 PLATFORM_LABELS = {"alipay": "订单号", "wechat": "交易单号"}
 FALLBACK_LABEL = "平台单号"
 
 
 def order_lines(payments):
-    """支付记录附件列表 → 发票首页单号标注行；order_no 为空的支付不生成行。"""
+    """把支付记录附件列表转成发票首页单号标注行。order_no 为空的支付不生成行。"""
     return [
         f"{_label(payment, no)}: {no}"
         for payment in payments
@@ -57,7 +57,7 @@ def stamped_pdf(data, filename, seq, lines):
 
 
 def _image_pdf(data):
-    """图片字节 → 单页 PDF：按 150dpi 换算页面尺寸，图片全幅铺放（人工脚本口径）。"""
+    """把图片字节转成单页 PDF：按 150dpi 换算页面尺寸，图片全幅铺放（人工脚本口径）。"""
     pix = pymupdf.Pixmap(data)
     doc = pymupdf.open()
     page = doc.new_page(width=pix.width * 72 / 150, height=pix.height * 72 / 150)

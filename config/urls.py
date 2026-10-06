@@ -19,7 +19,7 @@ urlpatterns = [
     path("", include("core.urls")),
 ]
 
-# /media/ 仅登录可访问（ADR-0002）；开发环境由 static() 兜底，生产环境保证
+# /media/ 仅登录可访问（ADR-0002）。开发环境由 static() 兜底，生产环境保证
 # admin 中文件链接可用且不绕过鉴权。
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

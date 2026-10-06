@@ -11,11 +11,11 @@
 - nginx 只直供 `/static/`（collectstatic 产物），不配置 `/media/`。
 - 看板上的文件访问走 `core.views.file_serve`（`/items/<pk>/file/<kind>/`）：`login_required` + `FileResponse` 流式返回，kind ∈ invoice|payment。
 - 生产环境额外挂 `re_path(r"^media/(?P<path>.*)$")` 的登录保护 serve（admin 里文件链接可用且仍需登录）。
-- 导出 Excel 中"支付截图/票据"单元格的超链接指向 `file_serve` 路由。
+- 导出 Excel 中“支付截图/票据”单元格的超链接指向 `file_serve` 路由。
 
 ## 后果
 
-- 文件下载经 Django，无 nginx sendfile 加速——个人工具流量下可忽略。
+- 文件下载经 Django，无 nginx sendfile 加速（个人工具流量下可忽略）。
 - 本地与生产行为一致（同一鉴权路径）。
 
-> 后续变更：ADR-0005 起条目改为多附件模型，媒体路由为 `/items/attachments/<pk>/file/`，Excel 表头为"支付记录/票据"，超链接指向每类首张附件。
+> 后续变更：ADR-0005 起条目改为多附件模型，媒体路由为 `/items/attachments/<pk>/file/`，Excel 表头为“支付记录/票据”，超链接指向每类首张附件。

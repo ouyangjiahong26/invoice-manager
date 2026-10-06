@@ -8,11 +8,11 @@
 
 ## 决策
 
-- 删除注册路由、视图、表单与模板；导航与登录页不再出现注册入口。
+- 删除注册路由、视图、表单与模板。导航与登录页不再出现注册入口。
 - 账号仅由管理员在后台添加：用户名 = 姓名拼音 + 两位年级（如 `ouyangjiahong22`），`first_name` 填真实姓名（即导出表中的付款人），初始密码统一 123456，由学生首登后自行修改。
 - 名单维护走 GitHub issue（如 24 级名单待补充）。
 
 ## 后果
 
-- `core/forms.SignUpForm`、`/register/`、注册模板移除；新增账号一律走 `/admin/auth/user/`。
+- `core/forms.SignUpForm`、`/register/`、注册模板移除。新增账号一律走 `/admin/auth/user/`。
 - 密码策略不再经表单校验（管理员开设的账号不跑 `AUTH_PASSWORD_VALIDATORS`）。

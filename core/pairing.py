@@ -3,15 +3,15 @@
 纯函数模块：不调 LLM、不碰 Django ORM（Decimal 除外），可独立单测。
 输入 records：[{id, kind, amount, order_no, merchant_no, invoice_no, remark_order_no}]，
 kind ∈ invoice/payment/refund/unknown，amount 为 Decimal/int/float/数字串（入口统一转
-Decimal，解析失败按 None）；多余键（如 items_summary）忽略。
+Decimal，解析失败按 None）。多余键（如 items_summary）忽略。
 
 规则按序执行：
-1. 单号互证：发票备注单号 = 支付平台单号/商户单号 → 同组；同单号多张发票、多笔支付并入，
+1. 单号互证：发票备注单号 = 支付平台单号/商户单号时归同组。同单号多张发票、多笔支付并入，
    一张发票命中多组支付时并为一组。同发票号码的多张发票视为重复拍摄并为一组。
-2. 退款挂组：退款单号命中任一支付的同名字段 → 挂入该支付所在组；挂不上单号时，金额与某唯一组
-   的支付合计相等（容差 AMOUNT_TOLERANCE）→ 挂入；仍挂不上进 unmatched。
-3. 金额兜底：单边发票组与单边支付组总额配平，含一笔支付对应多张发票的合付组合——发票侧组合
-   总额 = 支付侧总额；组合唯一（同一发票/支付不被多个匹配占用）→ 直接成组，否则连通后整体
+2. 退款挂组：退款单号命中任一支付的同名字段时挂入该支付所在组。挂不上单号时，金额与某唯一组
+   的支付合计相等（容差 AMOUNT_TOLERANCE）也挂入。仍挂不上进 unmatched。
+3. 金额兜底：单边发票组与单边支付组总额配平，含一笔支付对应多张发票的合付组合（发票侧组合
+   总额 = 支付侧总额）。组合唯一（同一发票/支付不被多个匹配占用）时直接成组，否则连通后整体
    进 pending（待确认组，由用户在预览页手动并组）。
 4. 剩余进 unmatched：发票找不到支付、支付找不到发票、退款找不到支付、unknown 未能识别类型。
 """
@@ -19,7 +19,7 @@ Decimal，解析失败按 None）；多余键（如 items_summary）忽略。
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 
-# 与 validation.AMOUNT_TOLERANCE 同值；独立定义以保持本模块零 Django 依赖
+# 与 validation.AMOUNT_TOLERANCE 同值。独立定义以保持本模块零 Django 依赖
 AMOUNT_TOLERANCE = Decimal("0.005")
 
 # 规则 3 发票侧组合枚举的组件数上限，超过只做单张对单笔比对，避免子集枚举爆炸
@@ -35,7 +35,7 @@ REASON_UNKNOWN_KIND = "未能识别票据类型"
 
 
 def pair(records):
-    """按规则 1-4 配对；返回 {"groups", "pending", "unmatched"}。"""
+    """按规则 1-4 配对。返回 {"groups", "pending", "unmatched"}。"""
     records = [dict(record) for record in records]
     for record in records:
         amount = record.get("amount")
@@ -91,7 +91,7 @@ def pair(records):
     components = _components(records, union)
 
     # 规则 3 金额兜底：单边发票组与单边支付组总额配平（含一笔支付对多张发票的合付）。
-    # 唯一匹配（发票组合、支付各不被其他匹配占用）直接并成一组；多候选连成连通块进 pending。
+    # 唯一匹配（发票组合、支付各不被其他匹配占用）直接并成一组。多候选连成连通块进 pending。
     invoice_only = {root: members for root, members in components.items()
                     if _has_kind(members, KIND_INVOICE) and not _has_kind(members, KIND_PAYMENT)}
     payment_only = {root: members for root, members in components.items()
@@ -109,7 +109,7 @@ def pair(records):
                 union.union(iroot, proot)
     components = _components(records, union)
 
-    # 含发票+支付的连通块即成组（规则 1/2 组 + 规则 3 唯一匹配）；多候选连通块整体待确认
+    # 含发票+支付的连通块即成组（规则 1/2 组 + 规则 3 唯一匹配）。多候选连通块整体待确认
     groups = [
         _ids(members) for members in components.values()
         if _has_kind(members, KIND_INVOICE) and _has_kind(members, KIND_PAYMENT)
@@ -166,7 +166,7 @@ def _has_kind(members, kind):
 
 
 def _kind_total(members, kind):
-    """某类成员金额合计；无该类成员或有成员缺金额时返回 None（总额不可信，不参与互证）。"""
+    """某类成员金额合计。无该类成员或有成员缺金额时返回 None（总额不可信，不参与互证）。"""
     amounts = [member.get("amount") for member in members if member.get("kind") == kind]
     if not amounts or any(amount is None for amount in amounts):
         return None
@@ -174,7 +174,7 @@ def _kind_total(members, kind):
 
 
 def _to_decimal(raw):
-    """金额统一转 Decimal；解析失败返回 None（原值不可信，等同缺金额）。"""
+    """金额统一转 Decimal。解析失败返回 None（原值不可信，等同缺金额）。"""
     try:
         return Decimal(str(raw).strip())
     except (InvalidOperation, ValueError, TypeError):
@@ -199,7 +199,7 @@ def _amount_matches(invoice_only, payment_only):
 
 
 def _subsets_totaling(roots, totals, target, multi):
-    """总额等于 target（容差内）的组件子集；multi=False 时只比单张。"""
+    """总额等于 target（容差内）的组件子集。multi=False 时只比单张。"""
     result = [
         frozenset({root}) for root in roots
         if abs(totals[root] - target) <= AMOUNT_TOLERANCE

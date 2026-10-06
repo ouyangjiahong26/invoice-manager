@@ -8,15 +8,15 @@
 
 ## 决策
 
-- **物理删除 + AuditLog 快照，不做软删除/回收站**：软删除要求看板、导出、admin 全部查询追加"排除已删"过滤，漏一处即泄漏已删数据；物理删除下所有查询零改动，删除后靠留痕快照追溯。
-- **自建 AuditLog，不引入 django-simple-history**：无新依赖；diff 结构自定（修改存 old→new，创建/删除存全量）；simple-history 同样捕获不了 `queryset.update()`，且全量快照在列表页难以直读变化。
-- **留痕走信号（pre_save/post_save/post_delete）+ contextvar 中间件捕获操作人**，不在各视图显式调用：避免 models↔audit 循环导入，且未来新增保存路径（admin 表单、list_editable、新视图）不会漏记；非请求路径（shell/级联）操作人为空，展示回退"系统"。
-- **admin 三个批量 action 必须逐条 `save()`**：这是 `queryset.update()` 绕过信号问题的唯一已知入口，重写为逐条保存后批量审核同样落痕。
-- 快照全部字段值一律转字符串存储，规避 Decimal/JSON 编码差异；文件字段只记文件名变化，旧文件留存磁盘但无下发路由。
+- 物理删除 + AuditLog 快照，不做软删除/回收站：软删除要求看板、导出、admin 全部查询追加“排除已删”过滤，漏一处即泄漏已删数据。物理删除下所有查询零改动，删除后靠留痕快照追溯。
+- 自建 AuditLog，不引入 django-simple-history：无新依赖。diff 结构自定（修改存 old 与 new，创建/删除存全量）。simple-history 同样捕获不了 `queryset.update()`，且全量快照在列表页难以直读变化。
+- 留痕走信号（pre_save/post_save/post_delete）加 contextvar 中间件捕获操作人，不在各视图显式调用：避免 models 与 audit 循环导入，且未来新增保存路径（admin 表单、list_editable、新视图）不会漏记。非请求路径（shell/级联）操作人为空，展示回退“系统”。
+- admin 三个批量 action 必须逐条 `save()`：这是 `queryset.update()` 绕过信号问题的唯一已知入口，重写为逐条保存后批量审核同样落痕。
+- 快照全部字段值一律转字符串存储，规避 Decimal/JSON 编码差异。文件字段只记文件名变化，旧文件留存磁盘但无下发路由。
 - 删除留痕 `item_id` 落 NULL、仅凭冗余 `item_pk` 检索（post_delete 触发时行已删除，外键不能引用）。
 
 ## 后果
 
 - 已删条目恢复需按留痕快照手工重建，不提供一键恢复。
 - 被替换/删除条目的旧文件留存磁盘（`MEDIA_ROOT` 下），无路由可访问，需人工清理。
-- shell/脚本直改数据库不留痕；留痕不可改，不设清理策略（班级量级，每条一行 JSON，量大人再考虑归档）。
+- shell/脚本直改数据库不留痕。留痕不可改，不设清理策略（班级量级，每条一行 JSON，量大人再考虑归档）。

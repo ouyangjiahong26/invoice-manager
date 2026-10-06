@@ -26,7 +26,7 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 # 导出下载走独立子域（如 https://download.cislunarspace.cn），空 = 与页面同域
 DOWNLOAD_ORIGIN = os.environ.get("DJANGO_DOWNLOAD_ORIGIN", "").rstrip("/")
-# 页面域与下载域共享登录态：cookie 挂父域；空 = 默认仅当前域
+# 页面域与下载域共享登录态：cookie 挂父域。空 = 默认仅当前域
 _cookie_domain = os.environ.get("DJANGO_COOKIE_DOMAIN", "")
 SESSION_COOKIE_DOMAIN = _cookie_domain or None
 CSRF_COOKIE_DOMAIN = _cookie_domain or None
@@ -106,16 +106,16 @@ LOGOUT_REDIRECT_URL = "login"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 X_FRAME_OPTIONS = "SAMEORIGIN"  # 侧边栏/浮层用同源 iframe 内嵌票据 PDF（DENY 会连自己一起拦）
 
-# DeepSeek 识图预填；DEEPSEEK_API_KEY 为空时预填整体关闭
+# DeepSeek 识图预填。DEEPSEEK_API_KEY 为空时预填整体关闭
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
-# 期望的发票抬头/税号；为空则跳过该项校验
+# 期望的发票抬头/税号，为空则跳过该项校验
 EXPECTED_INVOICE_TITLE = os.environ.get("EXPECTED_INVOICE_TITLE", "").strip()
 EXPECTED_INVOICE_TAX_ID = os.environ.get("EXPECTED_INVOICE_TAX_ID", "").strip()
 
-# 导出票据标注布局（单位 pt；默认对齐人工批次处理流程参数），见 core/stamping.py
+# 导出票据标注布局（单位 pt，默认对齐人工批次处理流程参数），见 core/stamping.py
 EXPORT_STAMP_MARGIN = float(os.environ.get("EXPORT_STAMP_MARGIN", "12"))
 EXPORT_STAMP_SEQ_SIZE = float(os.environ.get("EXPORT_STAMP_SEQ_SIZE", "22"))
 EXPORT_STAMP_ORDER_SIZE = float(os.environ.get("EXPORT_STAMP_ORDER_SIZE", "8.5"))

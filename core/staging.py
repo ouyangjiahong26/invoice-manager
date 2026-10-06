@@ -1,7 +1,7 @@
 """配对会话暂存：批量页上传的文件落 MEDIA_ROOT/tmp/batch/<session_id>/（ADR-0008）。
 
 会话目录含 meta.json（{"user_id": ...}）与 "<file_id>__<安全化文件名>" 两类文件。
-生命周期：提交成功立即 cleanup；每次 create_session 顺手清扫 mtime 超 TTL 的残留目录。
+生命周期：提交成功立即 cleanup。每次 create_session 顺手清扫 mtime 超 TTL 的残留目录。
 本模块只管文件落盘与归属校验，不做上传格式校验（views 层复用 vision.validate_upload）。
 """
 
@@ -69,7 +69,7 @@ def create_session(user_id, uploads):
 
 
 def session_dir(session_id, user_id):
-    """返回归属校验通过的会话目录；会话不存在或不属于该用户抛 ValueError。"""
+    """返回归属校验通过的会话目录。会话不存在或不属于该用户抛 ValueError。"""
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{32}", session_id or ""):
         raise ValueError("会话无效")
     session = _root() / session_id
@@ -84,7 +84,7 @@ def session_dir(session_id, user_id):
 
 
 def file_path(session, file_id):
-    """返回会话内的暂存文件路径；不存在抛 ValueError。"""
+    """返回会话内的暂存文件路径。不存在抛 ValueError。"""
     if not isinstance(file_id, str) or not re.fullmatch(r"[0-9a-f]{32}", file_id or ""):
         raise ValueError("文件无效")
     for entry in session.iterdir():

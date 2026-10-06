@@ -181,7 +181,7 @@ class AuditLog(models.Model):
         return f"{self.actor_name or '系统'} {self.get_action_display()} #{self.item_pk}"
 
     def detail_rows(self):
-        """返回 [(字段标签, 明细文本)]。update 为 "旧 → 新"，create/delete 为终值。"""
+        """返回 [(字段标签, 明细文本)]。update 为“由旧值改为新值”，create/delete 为终值。"""
         from .audit import FIELD_LABELS, format_attachments
 
         rows = []
@@ -190,7 +190,7 @@ class AuditLog(models.Model):
             if field == "attachments":
                 text = format_attachments(change)
             elif isinstance(change, list):
-                text = " → ".join(change)
+                text = "由 %s 改为 %s" % tuple(change)
             else:
                 text = change
             rows.append((label, text))

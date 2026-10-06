@@ -95,6 +95,14 @@ class SubmissionTestCase(TestCase):
         self.assertRedirects(response, "/")
         return Item.objects.latest("id")
 
+    def _stage(self, uploads):
+        """走 stage 端点建会话，返回 (session_id, [file_id])。"""
+        self.client.force_login(self.student)
+        response = self.client.post("/items/batch/stage/", {"files": uploads})
+        data = response.json()
+        return data["session_id"], [f["id"] for f in data["files"]]
+
+
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class AttachmentSubmissionTests(SubmissionTestCase):
@@ -286,7 +294,7 @@ class AttachmentSubmissionTests(SubmissionTestCase):
 
 
 class OrderLineTests(SimpleTestCase):
-    """发票首页单号行前缀称谓：platform 优先、单号前缀推断、兜底；空单号跳过。"""
+    """发票首页单号行前缀称谓：platform 优先、单号前缀推断、兜底。空单号跳过。"""
 
     @staticmethod
     def _payment(order_no, ocr_data=None):
@@ -326,7 +334,7 @@ class ExportStampingTests(SubmissionTestCase):
 
     @staticmethod
     def _png_bytes(width=200, height=200):
-        """生成空白 PNG；1x1 图转 PDF 页高不足 1pt，标注文字会落在页外。"""
+        """生成空白 PNG。1x1 图转 PDF 页高不足 1 pt，标注文字会落在页外。"""
         return pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height)).tobytes("png")
 
     def _item(self, **kwargs):
@@ -347,7 +355,7 @@ class ExportStampingTests(SubmissionTestCase):
 
     @staticmethod
     def _red_spans(data):
-        """PDF 字节 → [(页号, 红色文本)]，只取标注色文字，不依赖 span 顺序。"""
+        """把 PDF 字节解析成 [(页号, 红色文本)]，只取标注色文字，不依赖 span 顺序。"""
         doc = pymupdf.open(stream=data, filetype="pdf")
         return [
             (pno, span["text"])
@@ -416,7 +424,7 @@ class ExportStampingTests(SubmissionTestCase):
         self.assertEqual(self._red_spans(zf.read(payment)), [(0, "01")])
 
     def test_layout_matches_manual_spec(self):
-        """布局对齐人工批次规格：hebo 22pt 序号距底 12pt；china-s 8.5pt 单号距底 34pt。"""
+        """布局对齐人工批次规格：hebo 22 pt 序号距底 12 pt。china-s 8.5 pt 单号距底 34 pt。"""
         item = self._item()
         self._attach(item, Attachment.KIND_INVOICE, "inv.pdf", self._pdf_bytes(1))
         self._attach(item, Attachment.KIND_PAYMENT, "p.png", self._png_bytes(300, 200),
@@ -475,18 +483,17 @@ class CheckItemTests(SubmissionTestCase):
         )
 
     def test_union_32_digit_order_no_passes(self):
-        """银联等银行渠道单号 20 开头可到 32 位（20260924 批次实测），不再误报。"""
+        """银联等银行渠道单号 20 开头可到 32 位。"""
         item = self._item()
-        self._payment(item, order_no="20251216102935823001062270225585")
+        self._payment(item, order_no="20" + "2" * 30)
         self.assertEqual(check_item(item), [])
         self._payment(item, order_no="20" + "1" * 31, amount=None)  # 33 位超出渠道上限
         self.assertIn("平台单号格式不符", check_item(item)[0])
 
     def test_wechat_28_digit_order_no_passes(self):
-        """微信交易单号 4 开头 28 位（20261005 批次实测 4500000430202610037898012541），
-        正则曾写成 27 位导致所有微信支付误报。"""
+        """微信交易单号 4 开头 28 位。"""
         item = self._item()
-        self._payment(item, order_no="4500000430202610037898012541")
+        self._payment(item, order_no="4" + "5" * 27)
         self.assertEqual(check_item(item), [])
         self._payment(item, order_no="4" + "1" * 26)  # 27 位不足微信单号长度
         self.assertTrue(any("平台单号格式不符" in w for w in check_item(item)))
@@ -578,7 +585,7 @@ class AuditLogTests(SubmissionTestCase):
         self.assertEqual(AuditLog.objects.count(), before + 1)
         log = AuditLog.objects.filter(action="update").latest("id")
         self.assertNotIn("actual_amount", log.snapshot)
-        self.assertIn("金额 空 → 55.50", log.snapshot["attachments"])
+        self.assertIn("金额 由 空 改为 55.50", log.snapshot["attachments"])
 
     def test_no_op_save_writes_nothing(self):
         item = self._create_item(self.student)
@@ -795,7 +802,7 @@ class PairingTests(SimpleTestCase):
         self.assertEqual(result["unmatched"], [])
 
     def test_amount_fallback_merges_combined_invoices(self):
-        """合付：多张发票合计与一笔支付总额相等 → 并成一组（一笔支付对应多张发票）。"""
+        """合付：多张发票合计与一笔支付总额相等时并成一组（一笔支付对应多张发票）。"""
         result = pairing.pair([
             self._record(0, "invoice", "161.00"),
             self._record(1, "invoice", "254.94"),
@@ -819,7 +826,7 @@ class PairingTests(SimpleTestCase):
         self.assertEqual(len(result["unmatched"]), 4)
 
     def test_subset_ambiguity_goes_pending(self):
-        """组合多候选：单张 100 与 30+70 都配得上支付 100 → 整体待确认。"""
+        """组合多候选：单张 100 与 30+70 都配得上支付 100，整体待确认。"""
         result = pairing.pair([
             self._record(0, "invoice", "30"),
             self._record(1, "invoice", "70"),
@@ -934,20 +941,20 @@ class VisionDetectTests(SimpleTestCase):
         """腾讯云发票文件名超长被截断丢 .pdf 后缀、头部带脏字节：按 %PDF- 魔数走文本路径。"""
         doc = pymupdf.open()
         page = doc.new_page()
-        page.insert_text((36, 60), "腾讯云发票 发票金额 505.27元 发票号码 26117000001528347626 " * 2)
+        page.insert_text((36, 60), "腾讯云发票 发票金额 99.00元 发票号码 26117000009900000001 " * 2)
         data = b"0okok" + doc.tobytes()  # 复刻线上脏头
         content = json.dumps({
-            "kind": "invoice", "invoice_amount": 505.27, "invoice_no": "26117000001528347626",
+            "kind": "invoice", "invoice_amount": 99.00, "invoice_no": "26117000009900000001",
             "remark_order_no": "", "buyer_name": "", "buyer_id": "",
             "items_summary": "腾讯云 轻量应用服务器", "amount": None,
             "platform": "unknown", "order_no": "", "merchant_no": "",
         })
         with mock.patch("core.vision._post", return_value=self._response(content)) as post:
-            result = vision.detect(data, "100007654041_QCLOUD_qcloud_invoice_6ac3259edb9a917911740")
+            result = vision.detect(data, "999999999999_QCLOUD_qcloud_invoice_6ac3259edb9a917911740")
         self.assertTrue(post.called)
         self.assertEqual(result["kind"], "invoice")
-        self.assertEqual(result["invoice_amount"], 505.27)
-        self.assertEqual(result["_source"], "text")  # 文本充足，不再把 PDF 字节当图发
+        self.assertEqual(result["invoice_amount"], 99.00)
+        self.assertEqual(result["_source"], "text")
         # 头部无 %PDF- 的图片仍走图片路径
         with mock.patch("core.vision._post", return_value=self._response(content)) as post:
             vision.detect(PNG_1X1, "photo")
@@ -990,7 +997,7 @@ class VisionDetectTests(SimpleTestCase):
 class StagingSafeNameTests(SimpleTestCase):
     def test_long_name_keeps_extension(self):
         """超长文件名截断保留扩展名：丢后缀会让识别按文件名错走图片路径。"""
-        long_pdf = "100007654041_QCLOUD_E02EA992120261050519147_qcloud_invoice_6ac3259edb9a91791174" + "0123456789" * 5 + ".pdf"
+        long_pdf = "999999999999_QCLOUD_E02EA9TEST00000000000000_qcloud_invoice_6ac3259edb9a91791174" + "0123456789" * 5 + ".pdf"
         name = staging._safe_name(long_pdf)
         self.assertLessEqual(len(name), 80)
         self.assertTrue(name.endswith(".pdf"))
@@ -1030,12 +1037,6 @@ class BatchStageTests(SubmissionTestCase):
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchSubmitTests(SubmissionTestCase):
-    def _stage(self, uploads):
-        """走 stage 端点建会话，返回 (session_id, [file_id])。"""
-        self.client.force_login(self.student)
-        response = self.client.post("/items/batch/stage/", {"files": uploads})
-        data = response.json()
-        return data["session_id"], [f["id"] for f in data["files"]]
 
     def _post_batch(self, session_id, groups):
         return self.client.post(
@@ -1215,11 +1216,6 @@ class BatchSubmitTests(SubmissionTestCase):
 
 @override_settings(DEEPSEEK_API_KEY="test-key", MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BatchPairViewTests(SubmissionTestCase):
-    def _stage(self, uploads):
-        self.client.force_login(self.student)
-        response = self.client.post("/items/batch/stage/", {"files": uploads})
-        data = response.json()
-        return data["session_id"], [f["id"] for f in data["files"]]
 
     def _post_pair(self, session_id, records):
         return self.client.post(
@@ -1300,7 +1296,7 @@ class BatchPairViewTests(SubmissionTestCase):
 @override_settings(DEEPSEEK_API_KEY="test-key")
 class VisionRequestShapeTests(SimpleTestCase):
     def test_group_suggest_sends_content_as_part_list(self):
-        """回归：group_suggest/field_suggest 曾把裸 dict 当 content，DeepSeek 一直 422。"""
+        """group_suggest/field_suggest 的 content 参数为结构化消息体。"""
         from core import vision
         response = {"choices": [{"message": {"content": '{"groups": []}'}}]}
         with mock.patch.object(vision, "_post", return_value=response) as post_mock:
@@ -1311,7 +1307,7 @@ class VisionRequestShapeTests(SimpleTestCase):
         self.assertEqual(content[0]["type"], "text")
 
     def test_merge_page_results_sums_payments_and_keeps_first_no(self):
-        """多笔支付合一份 PDF：金额相加，单号取首个；类型不一致退回首页。"""
+        """多笔支付合一份 PDF：金额相加，单号取首个。类型不一致退回首页。"""
         from core import vision
         pages = [
             {"kind": "payment", "amount": 100.0, "order_no": "A1"},
@@ -1374,7 +1370,7 @@ class BatchAgentRoundTests(SubmissionTestCase):
         self.assertEqual(reread_mock.call_args_list[0][0][1], "发票.png")
 
     def test_reread_amount_correction_does_not_crash_repair(self):
-        """回归：重读修正支付金额为 float 时，第二轮配对曾因 Decimal+float 混算 500。"""
+        """重读修正支付金额为 float 时，第二轮配对正常运行。"""
         session_id, invoice_id, payment_id = self._stage_two()
         invoice_reread = {"kind": "invoice", "invoice_amount": 30.0}
         payment_reread = {"kind": "payment", "amount": 30.0, "order_no": "Z9"}
@@ -1490,7 +1486,7 @@ class BoardTableTests(SubmissionTestCase):
         self.assertNotContains(response, "导出 Excel")
 
     def test_export_buttons_follow_download_origin(self):
-        """配置 DOWNLOAD_ORIGIN 后导出按钮指向下载域；未配置保持相对链接。"""
+        """配置 DOWNLOAD_ORIGIN 后导出按钮指向下载域。未配置保持相对链接。"""
         self.client.force_login(self.staff)
         with override_settings(DOWNLOAD_ORIGIN="https://dl.example.com"):
             html = self.client.get("/").content.decode()
@@ -1504,7 +1500,7 @@ class BoardTableTests(SubmissionTestCase):
         self.client.force_login(self.staff)
         self.assertContains(self.client.get("/"), "创建批次")
         self.client.force_login(self.student)
-        self.assertContains(self.client.get("/"), "请联@管理员创建批次")
+        self.assertContains(self.client.get("/"), "请联系管理员创建批次")
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
@@ -1771,6 +1767,10 @@ class BatchAddTests(SubmissionTestCase):
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT, DEEPSEEK_API_KEY="test-key")
 class ImportBatchCommandTests(SubmissionTestCase):
+    def setUp(self):
+        super().setUp()
+        self.root = User.objects.create_user("root", password="pw", is_superuser=True)
+
     def call(self, directory, *args):
         out = StringIO()
         call_command("import_batch", str(directory), *args, stdout=out)
@@ -1787,7 +1787,6 @@ class ImportBatchCommandTests(SubmissionTestCase):
         return paths
 
     def test_person_dir_creates_pending_item(self):
-        User.objects.create_user("root", password="pw", is_superuser=True)
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
             with mock.patch("core.vision.detect") as detect:
@@ -1812,7 +1811,7 @@ class ImportBatchCommandTests(SubmissionTestCase):
         self.assertIn("建条 1 条", out)
 
     def test_unknown_person_falls_back_to_executor(self):
-        root = User.objects.create_user("root", password="pw", is_superuser=True)
+        root = self.root
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, "王五", ["invoice.jpg", "payment.jpg"])
             with mock.patch("core.vision.detect") as detect:
@@ -1825,10 +1824,9 @@ class ImportBatchCommandTests(SubmissionTestCase):
         item = Item.objects.get()
         self.assertEqual(item.owner, root)
         self.assertIn("人名 王五 无匹配账号", out)
-        self.assertIn("owner=执行者 root", out)
+        self.assertIn("归执行者 root", out)
 
     def test_single_sided_file_reported_not_created(self):
-        User.objects.create_user("root", password="pw", is_superuser=True)
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, None, ["01 论文录用通知.pdf"])
             with mock.patch("core.vision.detect", return_value={"kind": "invoice", "invoice_amount": 200}):
@@ -1840,7 +1838,6 @@ class ImportBatchCommandTests(SubmissionTestCase):
 
     def test_negative_amount_file_reported_not_created(self):
         """识别出负数金额的文件按识别失败报告，导入不中断、不建条目。"""
-        User.objects.create_user("root", password="pw", is_superuser=True)
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
             with mock.patch("core.vision.detect") as detect:
@@ -1854,8 +1851,7 @@ class ImportBatchCommandTests(SubmissionTestCase):
         self.assertIn("找不到对应发票", out)
 
     def test_missing_amount_attachments_do_not_break_import(self):
-        """附件识别不到金额时导入不崩溃（旧实现对 None 求和直接 TypeError），无法配对的按未成条目报告。"""
-        User.objects.create_user("root", password="pw", is_superuser=True)
+        """附件识别不到金额时导入不崩溃，无法配对的按未成条目报告。"""
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
             with mock.patch("core.vision.detect") as detect:
@@ -1868,7 +1864,6 @@ class ImportBatchCommandTests(SubmissionTestCase):
         self.assertIn("payment.jpg", out)
 
     def test_dry_run_creates_nothing(self):
-        User.objects.create_user("root", password="pw", is_superuser=True)
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
             with mock.patch("core.vision.detect") as detect:
@@ -1881,3 +1876,232 @@ class ImportBatchCommandTests(SubmissionTestCase):
         self.assertEqual(Item.objects.count(), 0)
         self.assertFalse(Batch.objects.filter(name="导入测试批").exists())
         self.assertIn("DRY-RUN 未落库", out)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class ExportFormulaSafetyTests(SubmissionTestCase):
+    """导出 Excel 的用户文本一律写成文本单元格，防公式注入。"""
+
+    def test_title_starting_with_equals_is_not_a_formula(self):
+        item = Item.objects.create(
+            owner=self.student, title="=HYPERLINK(\"http://evil\",\"点我\")",
+            category=self.category, batch=self.batch,
+            actual_amount="1.00", position=1, status=Item.STATUS_APPROVED,
+        )
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/excel/", {"batch": self.batch.pk})
+        sheet = load_workbook(BytesIO(response.content)).active
+        cell = sheet.cell(row=2, column=2)
+        self.assertEqual(cell.data_type, "s")
+        self.assertTrue(str(cell.value).startswith("="))
+        self.assertIsNotNone(item)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class RobustInputTests(SubmissionTestCase):
+    """行内接口对非法输入返回 400，不抛 500。"""
+
+    def test_field_update_non_dict_json_is_400(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.student)
+        response = self.client.post(
+            f"/items/{item.pk}/field/", "[]", content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_field_update_bad_category_value_is_400(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.student)
+        for bad in ("abc", "[1]", "0", "-3"):
+            response = self.client.post(
+                f"/items/{item.pk}/field/",
+                json.dumps({"field": "category", "value": bad}),
+                content_type="application/json")
+            self.assertEqual(response.status_code, 400, bad)
+            self.assertIn("类别无效", response.json()["error"])
+
+    def test_field_update_bad_owner_value_is_400(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "owner", "value": "abc"}),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("付款人无效", response.json()["error"])
+
+    def test_reorder_bad_category_value_is_400(self):
+        item = self._create_item(self.student)
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            "/items/reorder/",
+            json.dumps({"category": "abc", "order": [item.pk]}),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_reorder_non_dict_json_is_400(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            "/items/reorder/", "null", content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_prefill_kind_error_lists_all_kinds(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/prefill/", {"file": _png_upload("a.png"), "kind": "bad"})
+        self.assertEqual(response.status_code, 400)
+        message = response.json()["error"]
+        for kind in ("invoice", "payment", "refund", "support"):
+            self.assertIn(kind, message)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class DraftCheckTests(SubmissionTestCase):
+    """规则本体走服务端核对接口（core/validation.py）。"""
+
+    def test_item_draft_check_returns_server_warnings(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/draft-check/",
+            json.dumps({
+                "actual_amount": "5.00", "invoice_amount": "10.00",
+                "attachments": [
+                    {"kind": "payment", "amount": "5.00", "order_no": "bad"},
+                    {"kind": "invoice", "amount": "10.00"},
+                ],
+            }),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        warnings = response.json()["warnings"]
+        self.assertTrue(any("平台单号格式不符" in w for w in warnings))
+
+    def test_batch_group_check_reports_missing_fields(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/check/",
+            json.dumps({
+                "groups": [
+                    {"title": "", "category": "", "actual_amount": "",
+                     "files": [{"kind": "invoice", "amount": "10.00"}]},
+                    {"title": "有支付", "category": self.category.pk,
+                     "actual_amount": "10.00",
+                     "files": [{"kind": "payment", "amount": "10.00"}]},
+                ],
+            }),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["groups"]
+        self.assertIn("缺少明细", results[0]["issues"])
+        self.assertIn("类别无效或未选择", results[0]["issues"])
+        self.assertEqual(results[0]["state"], "solo")
+        self.assertIn("缺少发票", results[1]["issues"])
+        self.assertEqual(results[1]["state"], "no_invoice")
+
+    def test_batch_group_check_mismatch_state(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/check/",
+            json.dumps({"groups": [{
+                "title": "金额不平", "category": self.category.pk,
+                "actual_amount": "80.00",
+                "files": [{"kind": "invoice", "amount": "100.00"},
+                          {"kind": "payment", "amount": "80.00"}],
+            }]}),
+            content_type="application/json")
+        self.assertEqual(response.json()["groups"][0]["state"], "mismatch")
+        self.assertEqual(response.json()["groups"][0]["issues"], [])
+
+    def test_draft_check_skips_file_only_rules(self):
+        """未保存草稿无文件，深色模式等文件类检查自动跳过。"""
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/draft-check/",
+            json.dumps({
+                "actual_amount": "10.00", "invoice_amount": "10.00",
+                "attachments": [
+                    {"kind": "invoice", "amount": "10.00"},
+                    {"kind": "payment", "amount": "10.00", "order_no": ALIPAY_ORDER_NO},
+                ],
+            }),
+            content_type="application/json")
+        self.assertEqual(response.json()["warnings"], [])
+
+
+@override_settings(DEEPSEEK_API_KEY="test-key")
+class MergePageResultsTests(SimpleTestCase):
+    """多页识别合并：金额取值、类型判定、support 有意义判定。"""
+
+    def test_merge_takes_first_nonempty_invoice_amount(self):
+        from core import vision
+        pages = [
+            {"kind": "invoice", "invoice_amount": None, "invoice_no": "INV1"},
+            {"kind": "invoice", "invoice_amount": 160.0, "invoice_no": ""},
+        ]
+        merged = vision._merge_page_results(pages, "invoice")
+        self.assertEqual(merged["invoice_amount"], 160.0)
+        self.assertEqual(merged["invoice_no"], "INV1")
+
+    def test_merge_uses_caller_kind_for_prefill_path(self):
+        """prefill 路径的识别结果不含 kind 字段，仍按调用方指定类型合并金额。"""
+        from core import vision
+        pages = [
+            {"amount": 100.0, "order_no": "A1"},
+            {"amount": 50.0, "order_no": ""},
+        ]
+        merged = vision._merge_page_results(pages, "payment")
+        self.assertEqual(merged["amount"], 150.0)
+        self.assertEqual(merged["order_no"], "A1")
+
+    def test_support_result_with_only_items_summary_is_kept(self):
+        from core import vision
+        result = {"amount": None, "items_summary": "充值 100 元入余额"}
+        self.assertTrue(vision._meaningful("support", result))
+        self.assertFalse(vision._meaningful("support", {"amount": None, "items_summary": ""}))
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class NonFiniteAmountTests(SubmissionTestCase):
+    """金额为 NaN、Infinity 等非有限值时不得 500：宽松解析当缺金额，提交报 400。"""
+
+    def test_draft_check_non_finite_amount_is_not_500(self):
+        self.client.force_login(self.student)
+        for bad in ("sNaN", "NaN", "Infinity"):
+            response = self.client.post(
+                "/items/draft-check/",
+                json.dumps({
+                    "actual_amount": "10.00", "invoice_amount": "10.00",
+                    "attachments": [{"kind": "payment", "amount": bad}],
+                }),
+                content_type="application/json")
+            self.assertEqual(response.status_code, 200, bad)
+
+    def test_batch_group_check_non_finite_amount_is_not_500(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/check/",
+            json.dumps({"groups": [{
+                "title": "非有限金额", "category": self.category.pk,
+                "actual_amount": "sNaN",
+                "files": [{"kind": "invoice", "amount": "10.00"},
+                          {"kind": "payment", "amount": "NaN"}],
+            }]}),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["groups"][0]["state"], "ok")
+
+    def test_submit_non_finite_amount_is_400(self):
+        session_id, file_ids = self._stage(
+            [_png_upload("invoice.png"), _png_upload("payment.png")])
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({"session_id": session_id, "groups": [{
+                "title": "非有限金额", "category": self.category.pk,
+            "actual_amount": "10.00", "invoice_amount": "10.00",
+            "files": [
+                {"file_id": file_ids[0], "kind": "invoice", "amount": "10.00"},
+                {"file_id": file_ids[1], "kind": "payment", "amount": "sNaN"},
+            ]}]}),
+            content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("金额格式不正确", response.json()["error"])
+        self.assertFalse(Item.objects.exists())
