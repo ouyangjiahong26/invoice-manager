@@ -183,7 +183,7 @@
     return note;
   }
 
-  // 附件预览区点击放大（共用浮层）；安卓微信里 PDF 已是文字提示，无内容可放大
+  // 附件预览区点击放大（共用浮层）。安卓微信里 PDF 已是文字提示，无内容可放大
   function bindPreviewZoom(preview) {
     if (preview._zoomBound || !window.zoomPreview) return;
     var img = preview.querySelector("img");
@@ -301,7 +301,7 @@
     if (zoom && !zoom.hidden) return;  // 放大浮层开着时先关浮层，不连带关面板
     if (!PANEL.hidden) closePanel();
   });
-  // 面板滚到顶时支持向下轻扫关闭；未到顶时手势留给面板自身滚动
+  // 面板滚到顶时支持向下轻扫关闭。未到顶时手势留给面板自身滚动
   var touchStartY = null;
   PANEL.addEventListener("touchstart", function (e) {
     touchStartY = e.touches.length === 1 ? e.touches[0].clientY : null;
