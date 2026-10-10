@@ -1519,7 +1519,7 @@ class BoardTableTests(SubmissionTestCase):
         response = self.client.get("/")
         self.assertContains(response, item.title)
         self.assertNotContains(response, "旧条目")
-        self.assertContains(response, '<td class="num seq">1</td>')
+        self.assertContains(response, '<td class="num seq" data-label="序号">1</td>')
 
     def test_seq_matches_export_approved_only(self):
         """混合状态批次：approved 占连续序号且与导出一致，待审/退回不占号。"""
@@ -1532,9 +1532,9 @@ class BoardTableTests(SubmissionTestCase):
         rejected.save()
         self.client.force_login(self.staff)
         response = self.client.get("/")
-        self.assertContains(response, '<td class="num seq">1</td>')
-        self.assertContains(response, '<td class="num seq">—</td>')
-        self.assertNotContains(response, '<td class="num seq">2</td>')
+        self.assertContains(response, '<td class="num seq" data-label="序号">1</td>')
+        self.assertContains(response, '<td class="num seq" data-label="序号">—</td>')
+        self.assertNotContains(response, '<td class="num seq" data-label="序号">2</td>')
         # 同一批次导出：序号连续、只含 approved，与表格序号严格一致
         sheet = load_workbook(BytesIO(self.client.get(
             "/export/excel/", {"batch": approved.batch.pk}).content)).active
