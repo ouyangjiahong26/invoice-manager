@@ -95,16 +95,16 @@
           data-category-id="{{ row.item.category_id }}" data-owner-id="{{ row.item.owner_id }}"
           data-status="{{ row.item.status }}">
         {% if user.is_staff and not current_batch.archived %}<td class="drag-handle" title="拖拽调整类别内顺序">⋮⋮</td>{% endif %}
-        <td class="num seq">{{ row.seq|default_if_none:"—" }}</td>
+        <td class="num seq" data-label="序号">{{ row.seq|default_if_none:"—" }}</td>
         <td class="cell-title{% if row.can_edit %} editable{% endif %}" data-field="title">{{ row.item.title }}</td>
-        <td class="cell-category{% if row.can_edit %} editable{% endif %}" data-field="category">{{ row.item.category.name }}</td>
-        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="actual_amount">{{ row.item.actual_amount }}</td>
-        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="invoice_amount">{% if row.item.invoice_amount %}{{ row.item.invoice_amount }}{% endif %}</td>
-        <td class="cell-payer{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="payer">{{ row.item.payer_name }}</td>
-        <td class="cell-status{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="status"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
-        <td class="attach-count"
+        <td class="cell-category{% if row.can_edit %} editable{% endif %}" data-field="category" data-label="类别">{{ row.item.category.name }}</td>
+        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="actual_amount" data-label="实付款">{{ row.item.actual_amount }}</td>
+        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="invoice_amount" data-label="发票金额">{% if row.item.invoice_amount %}{{ row.item.invoice_amount }}{% endif %}</td>
+        <td class="cell-payer{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="payer" data-label="付款人">{{ row.item.payer_name }}</td>
+        <td class="cell-status{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="status" data-label="状态"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
+        <td class="attach-count" data-label="附件"
             title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}{% if row.counts.support %} · 证明 {{ row.counts.support }}{% endif %}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}{% if row.counts.support %}/{{ row.counts.support }}{% endif %}</td>
-        <td>{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
+        <td class="cell-actions">{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
       </tr>
       {% empty %}
       <tr class="empty-row"><td colspan="{% if user.is_staff %}10{% else %}9{% endif %}">当前筛选下没有条目</td></tr>
@@ -173,11 +173,39 @@
   // 安卓微信（X5）里 iframe 载入 PDF 走下载流程会弹系统「另存为」，预览改文字提示
   var WECHAT_ANDROID = /Android/i.test(navigator.userAgent) && /MicroMessenger/i.test(navigator.userAgent);
 
+  // 与 CSS 卡片式布局共用 720px 断点：窄屏下行内编辑停用，编辑统一走侧边栏表单
+  var NARROW = window.matchMedia("(max-width: 720px)");
+
   function pdfNote() {
     var note = document.createElement("div");
     note.className = "pdf-note";
     note.textContent = "微信内不支持 PDF 预览，请用电脑查看";
     return note;
+  }
+
+  // 附件预览区点击放大（共用浮层）。安卓微信里 PDF 已是文字提示，无内容可放大
+  function bindPreviewZoom(preview) {
+    if (preview._zoomBound || !window.zoomPreview) return;
+    var img = preview.querySelector("img");
+    var frame = preview.querySelector("iframe");
+    if (!img && !frame) return;
+    preview._zoomBound = true;
+    preview.classList.add("zoomable");
+    preview.addEventListener("click", function () {
+      var source = preview.querySelector("img") || preview.querySelector("iframe");
+      if (!source) return;
+      window.zoomPreview.open(function (box) {
+        if (source.tagName === "IFRAME") {
+          var f = document.createElement("iframe");
+          f.src = source.src || source.dataset.src;
+          box.appendChild(f);
+        } else {
+          var i = document.createElement("img");
+          i.src = source.src;
+          box.appendChild(i);
+        }
+      });
+    });
   }
 
   function go(changes) {
@@ -232,10 +260,13 @@
   }
 
   /* ---------- 侧边栏开关 ---------- */
+  function lockScroll() { document.documentElement.style.overflow = "hidden"; document.body.style.overflow = "hidden"; }
+  function unlockScroll() { document.documentElement.style.overflow = ""; document.body.style.overflow = ""; }
   function closePanel() {
     PANEL.hidden = true;
     MASK.hidden = true;
     PANEL.innerHTML = "";
+    unlockScroll();
   }
   function showError(message) {
     var box = PANEL.querySelector("#panel-error");
@@ -253,6 +284,7 @@
         PANEL.innerHTML = html;
         PANEL.hidden = false;
         MASK.hidden = false;
+        lockScroll();
         PANEL.querySelectorAll("iframe[data-src]").forEach(function (frame) {
           if (WECHAT_ANDROID) frame.replaceWith(pdfNote());
           else frame.src = frame.dataset.src;
@@ -264,14 +296,28 @@
   }
   MASK.addEventListener("click", closePanel);
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && !PANEL.hidden) closePanel();
+    if (e.key !== "Escape") return;
+    var zoom = document.getElementById("zoom-overlay");
+    if (zoom && !zoom.hidden) return;  // 放大浮层开着时先关浮层，不连带关面板
+    if (!PANEL.hidden) closePanel();
   });
+  // 面板滚到顶时支持向下轻扫关闭。未到顶时手势留给面板自身滚动
+  var touchStartY = null;
+  PANEL.addEventListener("touchstart", function (e) {
+    touchStartY = e.touches.length === 1 ? e.touches[0].clientY : null;
+  }, {passive: true});
+  PANEL.addEventListener("touchend", function (e) {
+    if (touchStartY === null || PANEL.scrollTop > 4 || PANEL.hidden) return;
+    if (e.changedTouches[0].clientY - touchStartY > 60) closePanel();
+    touchStartY = null;
+  }, {passive: true});
   var newBtn = document.getElementById("new-item-btn");
   if (newBtn) newBtn.addEventListener("click", function () { openPanel("{% url 'item_create' %}"); });
 
   /* ---------- 表格行交互：开侧边栏 / 删除 ---------- */
   if (tbody) tbody.addEventListener("click", function (e) {
-    if (e.target.closest("td.editable, .row-del, .drag-handle, a, button, input, select")) return;
+    if (e.target.closest(".row-del, .drag-handle, a, button, input, select")) return;
+    if (!NARROW.matches && e.target.closest("td.editable")) return;  // 宽屏可编辑格交给行内编辑
     var tr = e.target.closest("tr[data-pk]");
     if (tr) openPanel("/items/" + tr.dataset.pk + "/panel/");
   });
@@ -397,6 +443,7 @@
     }
   }
   if (tbody) tbody.addEventListener("click", function (e) {
+    if (NARROW.matches) return;  // 窄屏卡片模式：点击统一开侧边栏，编辑走侧边栏表单
     var cell = e.target.closest("td.editable");
     if (!cell || cell.querySelector(".inline-editor")) return;
     var field = cell.dataset.field;
@@ -608,6 +655,7 @@
   function initPanel() {
     var closeButton = PANEL.querySelector(".panel-close");
     if (closeButton) closeButton.addEventListener("click", closePanel);
+    PANEL.querySelectorAll(".attach-preview").forEach(bindPreviewZoom);
     PANEL.querySelectorAll("form[action]").forEach(function (form) {
       form.addEventListener("submit", function (e) {
         e.preventDefault();
@@ -765,6 +813,7 @@
         img.src = url;
         preview.appendChild(img);
       }
+      bindPreviewZoom(preview);
       var fields = card.querySelector(".attach-fields");
       KINDS[kind].fields.forEach(function (field) {
         var label = document.createElement("label");

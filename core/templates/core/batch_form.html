@@ -50,11 +50,6 @@
 </aside>
 </div>
 
-<div id="zoom-overlay" hidden>
-  <button type="button" id="zoom-close">关闭</button>
-  <div id="zoom-body"></div>
-</div>
-
 {{ categories|json_script:"categories-data" }}
 
 <template id="file-card-template">
@@ -89,7 +84,7 @@
   .chip-pdf { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; background: #d0d7de; border-radius: 4px; font-size: 11px; color: #1f2328; flex: none; }
   .chip .chip-name { flex: 1; word-break: break-all; }
   .group-card { border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; margin-top: 12px; }
-  .group-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-top: 8px; }
+  .group-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr)); gap: 8px; margin-top: 8px; }
   .group-fields label { display: block; font-size: 12px; color: #57606a; }
   .group-fields input, .group-fields select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
   .group-card .reconcile { font-size: 13px; }
@@ -107,15 +102,15 @@
   .ai-log li { padding: 4px 0; border-bottom: 1px dashed #eaeef2; word-break: break-all; }
   .ai-log li.ai-log-head { color: #1f2328; font-weight: 600; }
   .ai-log li.ai-log-empty { color: #8c959f; }
-  #zoom-overlay { position: fixed; inset: 0; background: #000000cc; z-index: 1000; display: flex; align-items: center; justify-content: center; }
-  #zoom-overlay[hidden] { display: none; }
-  #zoom-body { max-width: 92vw; max-height: 92vh; overflow: auto; background: #fff; border-radius: 8px; padding: 8px; }
-  #zoom-body img { max-width: 88vw; max-height: 84vh; display: block; }
-  #zoom-body iframe { width: 84vw; height: 84vh; border: 0; display: block; }
-  #zoom-close { position: fixed; top: 14px; right: 18px; z-index: 1001; }
   .chip { cursor: zoom-in; }
   .chip img { width: 56px; height: 56px; }
   .chip .chip-pdf { cursor: zoom-in; width: 56px; height: 56px; font-size: 13px; }
+  /* 窄屏（手机）：日志侧栏折行后不再顶跳，表单字号防 iOS 聚焦放大 */
+  @media (max-width: 720px) {
+    .batch-layout > .ai-log-card { position: static; max-height: 40vh; overflow: auto; flex-basis: 100%; }
+    .attach-field select, .group-fields input, .group-fields select,
+    .unmatched-row select, .pending-row select { font-size: 16px; }
+  }
 </style>
 
 <script>
@@ -181,7 +176,7 @@
   var unmatched = [];      // {card, reason}
   var ignored = new Set();
 
-  // ---------- AI 流程面板与放大浮层 ----------
+  // ---------- AI 流程面板与放大浮层（浮层为 base 提供的共用实现） ----------
   function logLine(text, head) {
     var box = document.getElementById("ai-log");
     var empty = box.querySelector(".ai-log-empty");
@@ -193,30 +188,23 @@
   }
 
   function showZoom(card) {
-    var body = document.getElementById("zoom-body");
-    body.innerHTML = "";
-    if (/\.pdf$/i.test(card._file.name)) {
-      if (WECHAT_ANDROID) {
-        body.appendChild(pdfNote());
+    if (!window.zoomPreview) return;
+    window.zoomPreview.open(function (body) {
+      if (/\.pdf$/i.test(card._file.name)) {
+        if (WECHAT_ANDROID) {
+          body.appendChild(pdfNote());
+        } else {
+          var frame = document.createElement("iframe");
+          frame.src = card._url;
+          body.appendChild(frame);
+        }
       } else {
-        var frame = document.createElement("iframe");
-        frame.src = card._url;
-        body.appendChild(frame);
+        var img = document.createElement("img");
+        img.src = card._url;
+        body.appendChild(img);
       }
-    } else {
-      var img = document.createElement("img");
-      img.src = card._url;
-      body.appendChild(img);
-    }
-    document.getElementById("zoom-overlay").hidden = false;
+    });
   }
-  document.getElementById("zoom-close").addEventListener("click", function () {
-    document.getElementById("zoom-overlay").hidden = true;
-    document.getElementById("zoom-body").innerHTML = "";  // 关闭即卸载 iframe，停掉渲染
-  });
-  document.getElementById("zoom-overlay").addEventListener("click", function (e) {
-    if (e.target === this) document.getElementById("zoom-close").click();
-  });
 
   function value(card, role) {
     var el = card.querySelector('[data-role="' + role + '"]');
