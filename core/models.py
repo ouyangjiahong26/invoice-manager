@@ -23,7 +23,8 @@ class Batch(models.Model):
 
 
     class Meta:
-        ordering = ["-created_at"]
+        # 创建时间完全相同（时钟精度不足时可能发生）会并列，用 id 兜底保证“最新批次”确定
+        ordering = ["-created_at", "-id"]
         verbose_name = "报销批次"
         verbose_name_plural = "报销批次"
 

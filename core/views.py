@@ -107,6 +107,15 @@ def board(request):
         current = batches.first()
 
     rows, payers, seen_payers = [], [], set()
+    # 本批汇总，供表格上方的统计卡展示；先于筛选统计，筛选只影响下方表格
+    summary = {
+        "total": 0,
+        "pending": 0,
+        "approved": 0,
+        "rejected": 0,
+        "actual_total": Decimal("0.00"),
+        "invoice_total": Decimal("0.00"),
+    }
     if current is not None:
         items = (
             current.items.select_related("owner", "category")
@@ -133,6 +142,10 @@ def board(request):
                 "can_edit": (request.user.is_staff or item.owner_id == request.user.id) and not current.archived,
                 "counts": counts,
             })
+            summary["total"] += 1
+            summary[item.status] = summary.get(item.status, 0) + 1
+            summary["actual_total"] += item.actual_amount
+            summary["invoice_total"] += item.invoice_amount or Decimal("0.00")
 
     status = request.GET.get("status", "")
     category_id = request.GET.get("category", "")
@@ -153,6 +166,7 @@ def board(request):
         "categories": Category.objects.all(),
         "payers": payers,
         "rows": rows,
+        "summary": summary,
         "status": status,
         "category_id": category_id,
         "payer_id": payer_id,
