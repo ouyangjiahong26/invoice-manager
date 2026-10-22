@@ -1,196 +1,78 @@
 <!DOCTYPE html>
-<html lang="zh-hans">
+<html lang="zh-hans" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>{% block title %}报销管理{% endblock %}</title>
+  <script>
+    // 先于首屏绘制决定主题，避免亮暗切换时闪白
+    (function () {
+      try {
+        var stored = localStorage.getItem("theme");
+        var dark = stored ? stored === "dark"
+          : window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      } catch (e) {}
+    })();
+  </script>
   <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2328; }
-    nav { background: #1f6feb; color: #fff; padding: 6px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-height: 48px; }
-    nav a { color: #fff; text-decoration: none; font-size: 14px; }
-    nav .brand { font-weight: 700; font-size: 16px; margin-right: 8px; }
-    nav .spacer { flex: 1; }
-    main { max-width: 1280px; margin: 20px auto; padding: 0 16px; }
-    .messages { list-style: none; padding: 0; margin: 0 0 16px; }
-    .messages li { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 14px; }
-    .messages .warning { background: #fff8c5; border: 1px solid #d4a72c; color: #7d4e00; }
-    .messages .success { background: #dafbe1; border: 1px solid #4ac26b; color: #116329; }
-    .messages .error { background: #ffebe9; border: 1px solid #ff818266; color: #a40e26; }
-    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-    .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid; }
-    .badge.pending { color: #7d4e00; border-color: #d4a72c; background: #fff8c5; }
-    .badge.approved { color: #116329; border-color: #4ac26b; background: #dafbe1; }
-    .badge.rejected { color: #a40e26; border-color: #ff8182; background: #ffebe9; }
-    form.stack label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
-    form.stack input, form.stack select, form.stack textarea { width: 100%; max-width: 420px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; }
-    form.stack .helptext { font-size: 12px; color: #57606a; margin-top: 2px; }
-    .errorlist { color: #a40e26; font-size: 13px; list-style: none; padding: 0; margin: 4px 0 0; }
-    button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; font-size: 14px; cursor: pointer; margin-top: 16px; }
-    button.secondary { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; }
-    .filters a { color: #1f6feb; text-decoration: none; margin-right: 10px; font-size: 14px; }
-    .filters a.active { font-weight: 700; }
-    h1 { font-size: 20px; } h2 { font-size: 16px; margin: 20px 0 10px; }
-    h3 { font-size: 14px; margin: 16px 0 6px; }
-    .ai-summary { border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 12px; font-size: 13px; background: #f6f8fa; margin-bottom: 12px; }
-    .ai-summary.warn { background: #fff8c5; border-color: #d4a72c; color: #7d4e00; }
-    .ai-summary.ok { background: #dafbe1; border-color: #4ac26b; color: #116329; }
-    .attach-block { margin-top: 14px; }
-    .attach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 12px; margin-top: 8px; }
-    .attach-card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 10px; font-size: 13px; }
-    .attach-card .attach-preview { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; height: 320px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-    .attach-card .attach-preview img { max-width: 100%; max-height: 100%; }
-    .attach-card .attach-preview iframe { width: 100%; height: 100%; border: 0; }
-    .pdf-note { color: #57606a; font-size: 13px; text-align: center; padding: 0 12px; }
-    .attach-card .attach-name { margin: 8px 0 4px; font-weight: 600; word-break: break-all; }
-    .attach-status { font-size: 12px; color: #57606a; }
-    .attach-status.ok { color: #116329; }
-    .attach-status.warn { color: #7d4e00; }
-    .attach-field { display: block; font-size: 12px; color: #57606a; font-weight: 400; margin: 6px 0 0; }
-    .attach-field input { width: 100%; max-width: none; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
-    .suggest { background: #ddf4ff; border: 1px solid #54aeff66; border-radius: 6px; padding: 4px 8px; margin-top: 6px; font-size: 12px; color: #0a3069; display: flex; align-items: center; gap: 8px; }
-    .suggest button { margin: 0; padding: 2px 8px; font-size: 12px; }
-    .timeline { margin-top: 8px; font-size: 12px; color: #57606a; }
-    .timeline div { margin-top: 2px; }
-    .reconcile { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
-    .reconcile .line { margin-top: 4px; }
-    .reconcile .ok { color: #116329; }
-    .reconcile .warn { color: #7d4e00; }
-    .reconcile .muted { color: #57606a; }
-    .submit-hint { font-size: 13px; color: #7d4e00; margin-left: 10px; }
-    button.small { padding: 4px 10px; font-size: 12px; margin-top: 6px; }
-    button.danger { background: #cf222e; }
-    .attach-actions { display: flex; gap: 8px; align-items: center; }
-    form.attach-row-form { margin-top: 6px; }
-    form.attach-row-form label { display: block; font-size: 12px; color: #57606a; margin-top: 6px; }
-    form.attach-row-form input, form.attach-row-form select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
-    /* 表格主视图与条目侧边栏（ADR-0007） */
-    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 10px; }
-    .toolbar .spacer, .panel-head .spacer { flex: 1; }
-    .toolbar-item { font-size: 13px; color: #57606a; display: flex; align-items: center; gap: 6px; }
-    .toolbar-item select, .toolbar-item input { padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; background: #fff; }
-    .toolbar .btn, .toolbar button, .toolbar summary { margin-top: 0; }
-    .toolbar .btn { background: #1f6feb; color: #fff; text-decoration: none; border-radius: 6px; padding: 7px 14px; font-size: 13px; }
-    .new-batch summary { cursor: pointer; font-size: 13px; color: #1f6feb; }
-    .new-batch form { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
-    .new-batch input { padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; }
-    .table-wrap { overflow-x: auto; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; }
-    table.board-table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 980px; }
-    table.board-table th, table.board-table td { border-bottom: 1px solid #d0d7de; padding: 8px 10px; text-align: left; white-space: nowrap; }
-    table.board-table th { background: #f6f8fa; font-size: 13px; position: sticky; top: 0; }
-    table.board-table th.sortable { cursor: pointer; user-select: none; }
-    table.board-table th.sortable:hover { color: #1f6feb; }
-    table.board-table th.sortable[data-dir="asc"]::after { content: " ↑"; color: #1f6feb; }
-    table.board-table th.sortable[data-dir="desc"]::after { content: " ↓"; color: #1f6feb; }
-    table.board-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-    table.board-table td.cell-title { white-space: normal; min-width: 200px; max-width: 360px; }
-    table.board-table td.editable { cursor: text; }
-    table.board-table td.cell-category.editable, table.board-table td.cell-status.editable,
-    table.board-table td.cell-payer.editable { cursor: pointer; }
-    table.board-table td.editable:hover { outline: 1px dashed #1f6feb; outline-offset: -2px; }
-    table.board-table tr[data-pk] { cursor: pointer; }
-    table.board-table tr.dragging { opacity: 0.4; }
-    table.board-table td.drag-handle { cursor: grab; color: #8c959f; letter-spacing: -1px; }
-    table.board-table .inline-editor { width: 100%; min-width: 90px; padding: 4px 6px; border: 1px solid #1f6feb; border-radius: 4px; font-size: 13px; }
-    table.board-table .empty-row td { color: #57606a; text-align: center; padding: 24px; }
-    .attach-count { color: #57606a; font-size: 13px; }
-    #panel-mask { position: fixed; inset: 0; background: rgba(31, 35, 40, 0.45); z-index: 40; }
-    #panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: #fff; border-left: 1px solid #d0d7de; box-shadow: -8px 0 24px rgba(31,35,40,0.12); z-index: 41; overflow-y: auto; padding: 16px max(20px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
-    @media (max-width: 720px) { #panel { width: 100vw; } }
-    #panel:not([hidden]) { animation: panel-in 0.2s ease; }
-    @keyframes panel-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
-    .panel-head { position: sticky; top: 0; z-index: 1; background: #fff; margin: -16px calc(-1 * max(20px, env(safe-area-inset-right))) 12px calc(-1 * max(20px, env(safe-area-inset-left))); padding: 12px max(20px, env(safe-area-inset-right)) 10px max(20px, env(safe-area-inset-left)); border-bottom: 1px solid #eaeef2; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 14px; }
-    .panel-head b { font-size: 16px; }
-    .panel-head .meta { color: #57606a; font-size: 13px; }
-    .panel-head .panel-close { margin-top: 0; }
-    .panel-warnings { background: #fff8c5; border: 1px solid #d4a72c; color: #7d4e00; border-radius: 6px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
-    .panel-warnings div { margin-top: 2px; }
-    .panel-review { background: #ddf4ff; border: 1px solid #54aeff66; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; color: #0a3069; }
-    .panel-review .review-text { white-space: pre-wrap; }
-    .panel-review .review-meta { color: #57606a; font-size: 12px; margin-top: 2px; }
-    .panel-readonly { margin-bottom: 8px; }
-    table.panel-fields { border-collapse: collapse; font-size: 14px; width: 100%; }
-    table.panel-fields th { text-align: left; color: #57606a; font-weight: 600; padding: 6px 12px 6px 0; width: 80px; font-size: 13px; vertical-align: top; }
-    table.panel-fields td { padding: 6px 0; }
-    .panel-section { margin-top: 18px; }
-    .panel-section h4 { font-size: 13px; margin: 10px 0 4px; color: #57606a; }
-    table.panel-audit { border-collapse: collapse; font-size: 12px; width: 100%; }
-    table.panel-audit th, table.panel-audit td { border: 1px solid #d0d7de; padding: 5px 8px; text-align: left; vertical-align: top; }
-    table.panel-audit th { background: #f6f8fa; }
-    table.panel-audit td { white-space: pre-wrap; }
-    #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1f2328; color: #fff; padding: 10px 18px; border-radius: 6px; font-size: 13px; z-index: 60; max-width: 80vw; }
-    #review-modal { position: fixed; inset: 0; background: rgba(31, 35, 40, 0.45); z-index: 70; display: flex; align-items: center; justify-content: center; }
-    #review-modal[hidden] { display: none; }
-    #review-modal form { background: #fff; border-radius: 8px; padding: 16px 20px; width: min(420px, 92vw); }
-    #review-modal h3 { margin: 0 0 6px; font-size: 15px; }
-    #review-modal .review-context { color: #57606a; font-size: 13px; margin-bottom: 8px; }
-    #review-modal textarea { width: 100%; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; resize: vertical; }
-    #review-modal .review-error { color: #a40e26; font-size: 13px; margin-top: 6px; }
-    #review-modal .review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-    #review-modal button { margin-top: 0; }
-    /* 共用全屏预览浮层（侧边栏附件、批量页票据放大） */
-    #zoom-overlay { position: fixed; inset: 0; background: #000000cc; z-index: 1000; display: flex; align-items: center; justify-content: center; }
-    #zoom-overlay[hidden] { display: none; }
-    #zoom-body { max-width: 92vw; max-height: 92vh; overflow: auto; background: #fff; border-radius: 8px; padding: 8px; }
-    #zoom-body img { max-width: 88vw; max-height: 84vh; display: block; }
-    #zoom-body iframe { width: 84vw; height: 84vh; border: 0; display: block; }
-    #zoom-close { position: fixed; top: 14px; right: 18px; z-index: 1001; margin-top: 0; }
-    .attach-preview.zoomable { cursor: zoom-in; }
-    /* 移动端适配：触屏无 hover，提示与触摸目标改常显 */
-    @media (hover: none) {
-      nav a { padding: 6px 0; }
-      .filters a { display: inline-block; padding: 6px 0; }
-      button.small { padding: 8px 14px; font-size: 13px; }
-      table.board-table td.editable { outline: 1px dashed #54aeff66; outline-offset: -2px; }
-      table.board-table .inline-editor { font-size: 16px; }
-    }
-    /* 窄屏（手机）：表单字号防 iOS 聚焦放大，看板改卡片式 */
-    @media (max-width: 720px) {
-      main { margin: 12px auto; }
-      .toolbar-item select, .toolbar-item input, form.stack input, form.stack select, form.stack textarea,
-      form.attach-row-form input, form.attach-row-form select, .attach-field input,
-      .new-batch input, #review-modal textarea { font-size: 16px; }
-      .attach-card .attach-preview { height: 220px; }
-      .table-wrap { overflow-x: visible; border: 0; background: transparent; }
-      table.board-table { display: block; min-width: 0; }
-      table.board-table thead { display: none; }
-      table.board-table tr { display: block; }
-      table.board-table tr[data-pk] { position: relative; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 14px 10px; margin-bottom: 10px; }
-      table.board-table td { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 0; padding: 5px 0; white-space: normal; }
-      table.board-table td::before { content: attr(data-label); color: #57606a; font-size: 13px; flex: none; }
-      table.board-table td.cell-title { display: block; font-size: 15px; font-weight: 600; padding: 6px 48px 2px 0; }
-      table.board-table td.cell-title::before { content: none; }
-      table.board-table td.seq { position: absolute; top: 10px; right: 14px; padding: 0; font-size: 13px; color: #57606a; }
-      table.board-table td.drag-handle { display: none; }
-      table.board-table td.cell-actions { justify-content: flex-end; padding-top: 8px; }
-      table.board-table td.cell-actions::before { content: none; }
-      table.board-table td.editable { cursor: pointer; outline: none; }
-      table.board-table tr.empty-row td { display: block; text-align: center; padding: 24px; color: #57606a; }
-      table.board-table tr.empty-row td::before { content: none; }
-    }
+{% include "core/_design.css" %}
+{% block extra_css %}{% endblock %}
   </style>
 </head>
 <body>
-<nav>
-  <span class="brand">报销管理</span>
-  {% if user.is_authenticated %}
-    <a href="{% url 'board' %}">报销表格</a>
-    <a href="{% url 'batch_create' %}">批量提交</a>
-    {% if user.is_staff %}
-      <a href="/admin/">后台</a>
+{% with current_nav=request.resolver_match.url_name %}
+<header class="app-bar">
+  <div class="app-bar-inner">
+    <a class="brand" href="{% url 'board' %}">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1-2-1Z"/>
+          <path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <span class="brand-name">报销管理</span>
+        <span class="brand-sub">课题组票据与批次</span>
+      </span>
+    </a>
+    {% if user.is_authenticated %}
+      <nav class="app-nav" aria-label="主导航">
+        <a href="{% url 'board' %}"{% if current_nav == 'board' %} aria-current="page"{% endif %}>报销表格</a>
+        <a href="{% url 'batch_create' %}"{% if current_nav == 'batch_create' %} aria-current="page"{% endif %}>批量提交</a>
+        {% if user.is_staff %}
+          <a href="/admin/"{% if '/admin/' in request.path %} aria-current="page"{% endif %}>后台</a>
+        {% endif %}
+      </nav>
     {% endif %}
-    <span class="spacer"></span>
-    <span>{{ user.get_full_name|default:user.username }}</span>
-    <form method="post" action="{% url 'logout' %}" style="margin:0">
-      {% csrf_token %}
-      <button class="secondary" style="margin:0;padding:4px 12px" type="submit">退出</button>
-    </form>
-  {% else %}
-    <span class="spacer"></span>
-    <a href="{% url 'login' %}">登录</a>
-  {% endif %}
-</nav>
-<main>
+    <div class="app-actions">
+      <button type="button" class="icon-btn theme-toggle" id="theme-toggle"
+              aria-label="切换深色模式" title="切换深色模式">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+        </svg>
+      </button>
+      {% if user.is_authenticated %}
+        <span class="user-chip" title="{{ user.get_full_name|default:user.username }}">
+          <span class="avatar" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1" }}</span>
+          <span class="user-name">{{ user.get_full_name|default:user.username }}</span>
+        </span>
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button class="secondary small" type="submit">退出</button>
+        </form>
+      {% else %}
+        <a class="btn small" href="{% url 'login' %}">登录</a>
+      {% endif %}
+    </div>
+  </div>
+</header>
+<main class="app-main">
   {% if messages %}
     <ul class="messages">
       {% for message in messages %}
@@ -200,6 +82,31 @@
   {% endif %}
   {% block content %}{% endblock %}
 </main>
+{% if user.is_authenticated %}
+<nav class="dock" aria-label="快捷导航">
+  <a href="{% url 'board' %}"{% if current_nav == 'board' %} aria-current="page"{% endif %}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 10v10"/>
+    </svg>
+    <span>表格</span>
+  </a>
+  <a href="{% url 'batch_create' %}"{% if current_nav == 'batch_create' %} aria-current="page"{% endif %}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 9 5-5 5 5"/><path d="M12 4v12"/>
+    </svg>
+    <span>批量</span>
+  </a>
+  {% if user.is_staff %}
+    <a href="/admin/"{% if '/admin/' in request.path %} aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>
+      </svg>
+      <span>后台</span>
+    </a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endwith %}
 <div id="zoom-overlay" hidden>
   <button type="button" id="zoom-close">关闭</button>
   <div id="zoom-body"></div>
@@ -207,6 +114,18 @@
 <script>
 (function () {
   "use strict";
+
+  /* ---------- 主题切换：跟随系统，手动选择后记住 ---------- */
+  var toggle = document.getElementById("theme-toggle");
+  if (toggle) toggle.addEventListener("click", function () {
+    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("theme", next); } catch (e) {}
+    toggle.setAttribute("aria-label", next === "dark" ? "切换浅色模式" : "切换深色模式");
+    toggle.setAttribute("title", next === "dark" ? "切换浅色模式" : "切换深色模式");
+  });
+
+  /* ---------- 全屏预览浮层，侧边栏附件与批量页票据共用 ---------- */
   var overlay = document.getElementById("zoom-overlay");
   var body = document.getElementById("zoom-body");
   var closeButton = document.getElementById("zoom-close");
@@ -229,5 +148,6 @@
   };
 })();
 </script>
+{% block extra_js %}{% endblock %}
 </body>
 </html>

@@ -1,19 +1,33 @@
 {% extends "core/base.html" %}
-{% block title %}登录{% endblock %}
+{% block title %}登录 · 报销管理{% endblock %}
 
 {% block content %}
-<div class="card" style="max-width:420px">
-  <h1>登录</h1>
-  <form class="stack" method="post">
-    {% csrf_token %}
-    {{ form.non_field_errors }}
-    {% for field in form %}
-      <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-      {{ field.errors }}
-      {{ field }}
-    {% endfor %}
-    <input type="hidden" name="next" value="{{ next }}">
-    <button type="submit">登录</button>
-  </form>
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-head">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1-2-1Z"/>
+          <path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/>
+        </svg>
+      </span>
+      <h1>登录报销管理</h1>
+      <p>账号由管理员开通，用户名是姓名拼音加年级</p>
+    </div>
+    <div class="card">
+      <form class="stack" method="post">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        {% for field in form %}
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field.errors }}
+          {{ field }}
+        {% endfor %}
+        <input type="hidden" name="next" value="{{ next }}">
+        <button type="submit">登录</button>
+      </form>
+    </div>
+    <p class="helptext auth-foot">忘记密码请联系管理员重置</p>
+  </div>
 </div>
 {% endblock %}

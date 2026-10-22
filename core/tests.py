@@ -17,6 +17,7 @@ from django.contrib.messages.storage.cookie import CookieStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from openpyxl import load_workbook
 
@@ -1589,6 +1590,33 @@ class BoardTableTests(SubmissionTestCase):
         self.assertContains(self.client.get("/"), "创建批次")
         self.client.force_login(self.student)
         self.assertContains(self.client.get("/"), "请联系管理员创建批次")
+
+    def test_summary_covers_whole_batch_while_filter_narrows_table(self):
+        """统计卡按整批汇总，状态筛选只影响下方表格。"""
+        approved = self._create_item(self.student, actual_amount="100.00", invoice_amount="120.00")
+        approved.status = Item.STATUS_APPROVED
+        approved.save()
+        self._create_item(self.student_b, title="待审条目", actual_amount="50.50")
+        self.client.force_login(self.staff)
+
+        response = self.client.get("/", {"status": "approved"})
+
+        summary = response.context["summary"]
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["approved"], 1)
+        self.assertEqual(summary["pending"], 1)
+        self.assertEqual(summary["actual_total"], Decimal("150.50"))
+        self.assertEqual(summary["invoice_total"], Decimal("220.00"))  # 传入 120.00 加默认 100.00
+        self.assertContains(response, "¥150.50")
+        self.assertNotContains(response, "待审条目")  # 被筛掉的是表格行，不是统计
+
+    def test_latest_batch_wins_when_timestamps_tie(self):
+        """创建时间完全相同时按 id 兜底，最新批次仍是后创建的那个。"""
+        newer = Batch.objects.create(name="并列批次 B")
+        stamp = timezone.now()
+        Batch.objects.filter(pk__in=[self.batch.pk, newer.pk]).update(created_at=stamp)
+
+        self.assertEqual(Batch.objects.first(), newer)
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
