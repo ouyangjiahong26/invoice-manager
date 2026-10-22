@@ -435,6 +435,24 @@ def batch_add(request):
 
 
 @login_required
+@require_POST
+def batch_archive(request, pk):
+    """存档或取消存档指定批次。存档后该批条目与附件对所有人只读。"""
+    if not request.user.is_staff:
+        raise PermissionDenied("只有管理员可以存档批次")
+    batch = get_object_or_404(Batch, pk=pk)
+    archived = request.POST.get("archived") == "1"
+    if batch.archived != archived:
+        batch.archived = archived
+        batch.save(update_fields=["archived"])
+        messages.success(
+            request,
+            f"已存档批次 {batch.name}" if archived else f"已取消存档批次 {batch.name}",
+        )
+    return redirect(f"{reverse('board')}?batch={batch.pk}")
+
+
+@login_required
 def file_serve(request, pk):
     attachment = get_object_or_404(Attachment, pk=pk)
     return FileResponse(attachment.file.open("rb"), as_attachment=False)

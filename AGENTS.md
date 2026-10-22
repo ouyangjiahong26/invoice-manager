@@ -10,7 +10,7 @@ Django 6.1 项目，项目配置包 `config`，唯一 app `core`，全函数视�
 浏览器 ──注册/登录──> core.views（函数视图）
   │                     ├─ board：按批次展示表格视图（序号=导出序号，?batch=&status=&category=&payer=&q= 筛选）
   │                     ├─ item_create/item_update/item_panel：侧边栏新建/编辑（ItemPanelForm + 多附件上传 invoices/payments/refunds/supports）
-  │                     ├─ item_field_update/item_reorder/batch_add：表格行内单字段保存 / staff 类别内拖拽调序 / staff 建批
+  │                     ├─ item_field_update/item_reorder/batch_add/batch_archive：表格行内单字段保存 / staff 类别内拖拽调序 / staff 建批与存档/取消存档批次
   │                     ├─ attachment_update/attachment_delete：已保存附件行内编辑/删除
   │                     ├─ file_serve：/items/attachments/<pk>/file/ 鉴权下发（ADR-0002）
   │                     ├─ prefill：附件文件送 DeepSeek 识别，结果回填 JSON（无状态），PDF/图片按内容魔数分流（ADR-0011）
