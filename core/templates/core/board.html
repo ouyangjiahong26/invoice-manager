@@ -18,6 +18,12 @@
       {% if user.is_staff %}
         <a class="btn secondary" href="{{ download_origin }}{% url 'export_excel' %}?batch={{ current_batch.pk }}">导出 Excel</a>
         <a class="btn secondary" href="{{ download_origin }}{% url 'export_zip' %}?batch={{ current_batch.pk }}">导出 zip</a>
+        <form method="post" action="{% url 'batch_archive' current_batch.pk %}"
+              onsubmit="return confirm('{% if current_batch.archived %}取消存档后该批条目与附件恢复可编辑，确定取消存档？{% else %}存档后该批条目与附件对所有人只读，确定存档？{% endif %}')">
+          {% csrf_token %}
+          <input type="hidden" name="archived" value="{% if current_batch.archived %}0{% else %}1{% endif %}">
+          <button type="submit" class="btn secondary">{% if current_batch.archived %}取消存档{% else %}存档{% endif %}</button>
+        </form>
       {% endif %}
       <button type="button" id="new-item-btn">新建条目</button>
     </div>

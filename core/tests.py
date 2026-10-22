@@ -2004,6 +2004,65 @@ class BatchAddTests(SubmissionTestCase):
         self.assertEqual(Batch.objects.filter(name=self.batch.name).count(), 1)
 
 
+class BatchArchiveTests(SubmissionTestCase):
+    """看板存档按钮：staff 存档/取消存档当前批次，学生无权操作。"""
+
+    def setUp(self):
+        super().setUp()
+        self.item = Item.objects.create(
+            owner=self.student, batch=self.batch, category=self.category,
+            title="硬盘", actual_amount=Decimal("10"), position=Item.next_position(),
+        )
+
+    def test_staff_archives_batch_and_button_toggles(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/batches/{self.batch.pk}/archive/", {"archived": "1"}, follow=True
+        )
+        self.assertEqual(response.redirect_chain, [(f"/?batch={self.batch.pk}", 302)])
+        self.assertContains(response, f"已存档批次 {self.batch.name}")
+        self.batch.refresh_from_db()
+        self.assertTrue(self.batch.archived)
+        self.assertContains(response, "取消存档")
+        self.assertNotContains(response, ">存档<")
+        self.assertNotContains(response, '<td class="drag-handle"')
+
+    def test_staff_unarchives_batch(self):
+        Batch.objects.filter(pk=self.batch.pk).update(archived=True)
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            f"/batches/{self.batch.pk}/archive/", {"archived": "0"}, follow=True
+        )
+        self.assertEqual(response.redirect_chain, [(f"/?batch={self.batch.pk}", 302)])
+        self.assertContains(response, f"已取消存档批次 {self.batch.name}")
+        self.batch.refresh_from_db()
+        self.assertFalse(self.batch.archived)
+        self.assertContains(response, ">存档<")
+        self.assertContains(response, '<td class="drag-handle"')
+
+    def test_student_forbidden(self):
+        self.client.force_login(self.student)
+        response = self.client.post(f"/batches/{self.batch.pk}/archive/", {"archived": "1"})
+        self.assertEqual(response.status_code, 403)
+        self.batch.refresh_from_db()
+        self.assertFalse(self.batch.archived)
+
+    def test_board_hides_button_for_student(self):
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertNotContains(response, f"/batches/{self.batch.pk}/archive/")
+
+    def test_get_not_allowed(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(f"/batches/{self.batch.pk}/archive/")
+        self.assertEqual(response.status_code, 405)
+
+    def test_missing_batch_returns_404(self):
+        self.client.force_login(self.staff)
+        response = self.client.post("/batches/999999/archive/", {"archived": "1"})
+        self.assertEqual(response.status_code, 404)
+
+
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT, DEEPSEEK_API_KEY="test-key")
 class ImportBatchCommandTests(SubmissionTestCase):
     def setUp(self):
