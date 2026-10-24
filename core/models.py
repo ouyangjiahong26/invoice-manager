@@ -16,6 +16,27 @@ class Category(models.Model):
         return self.name
 
 
+class GroupSettings(models.Model):
+    group = models.OneToOneField(
+        "auth.Group",
+        on_delete=models.CASCADE,
+        related_name="settings",
+        verbose_name="组",
+    )
+    self_service = models.BooleanField(
+        "成员可自建批次并审批自己的批次",
+        default=False,
+        help_text="开启后，组成员可以创建批次，并审批自己创建批次中的条目",
+    )
+
+    class Meta:
+        verbose_name = "组设置"
+        verbose_name_plural = "组设置"
+
+    def __str__(self):
+        return f"{self.group.name} 设置"
+
+
 class Batch(models.Model):
     name = models.CharField("批次名称", max_length=100)
     group = models.ForeignKey(
@@ -23,6 +44,14 @@ class Batch(models.Model):
         on_delete=models.PROTECT,
         related_name="batches",
         verbose_name="组",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_batches",
+        verbose_name="创建人",
     )
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     archived = models.BooleanField("已存档", default=False, help_text="存档批次只读：条目与附件不可增改删")

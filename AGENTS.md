@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project Overview
-报销管理（发票报销管理）：账号由管理员在后台开通（用户名 = 姓名拼音+年级，如 ouyangjiahong22）并归入组（如实验班、课题组，一人可属多组），学生登录后自助提交报销条目（发票/支付记录/退款记录附件 + AI 识别回填 + 实付金额），在本组共享表格视图中查看与筛选（批次切换、行内编辑，学生限改己行），点行打开侧边栏承载新建/编辑/附件/留痕。管理员在表格内审核（改状态/付款人）、拖拽调序、按报销批次一键导出用户格式 Excel（按类别小记+合计）与票据 zip。管理员看全部组，其他用户只看自己所属组。中文界面（`zh-hans`），服务端渲染，无前端构建链。开放注册已关闭（ADR-0003），组与批次归属见 ADR-0013。
+报销管理（发票报销管理）：账号由管理员在后台开通（用户名 = 姓名拼音+年级，如 ouyangjiahong22）并归入组（如实验班、课题组，一人可属多组），学生登录后自助提交报销条目（发票/支付记录/退款记录附件 + AI 识别回填 + 实付金额），在本组共享表格视图中查看与筛选（批次切换、行内编辑，学生限改己行），点行打开侧边栏承载新建/编辑/附件/留痕。管理员在表格内审核（改状态/付款人）、拖拽调序、按报销批次一键导出用户格式 Excel（按类别小记+合计）与票据 zip。管理员看全部组，其他用户只看自己所属组。开启成员自助的组，成员可自建批次并审批自己批次中的条目。中文界面（`zh-hans`），服务端渲染，无前端构建链。开放注册已关闭（ADR-0003），组与批次归属见 ADR-0013，自助批次见 ADR-0014。
 
 ## Architecture & Data Flow
 Django 6.1 项目，项目配置包 `config`，唯一 app `core`，全函数视图 + Django 模板。
@@ -9,8 +9,9 @@ Django 6.1 项目，项目配置包 `config`，唯一 app `core`，全函数视�
 ```
 浏览器 ──登录──> core.views（函数视图）
   │                     ├─ board：按本组批次展示表格视图（序号=导出序号，?batch=&status=&category=&payer=&q= 筛选）
-  │                     ├─ item_create/item_update/item_panel：侧边栏新建/编辑（ItemPanelForm + 多附件上传 invoices/payments/refunds/supports），新建归入所选组的最新批次
-  │                     ├─ item_field_update/item_reorder/batch_add/batch_archive：表格行内单字段保存 / staff 类别内拖拽调序 / staff 选组建批与存档/取消存档批次
+  │                     ├─ item_create/item_update/item_panel：侧边栏新建/编辑（ItemPanelForm + 多附件上传 invoices/payments/refunds/supports），新建归入自己或组的最新批次
+  │                     ├─ item_field_update/item_reorder/batch_add/batch_archive：表格行内单字段保存 / staff 类别内拖拽调序 / staff 或自助组成员选组建批 / staff 存档与取消存档批次
+  │                     ├─ item_review：批次创建者或 staff 改审核状态，批语必填
   │                     ├─ attachment_update/attachment_delete：已保存附件行内编辑/删除
   │                     ├─ file_serve：/items/attachments/<pk>/file/ 鉴权下发（ADR-0002），限本组、付款人本人或管理员
   │                     ├─ prefill：附件文件送 DeepSeek 识别，结果回填 JSON（无状态），PDF/图片按内容魔数分流（ADR-0011）
@@ -22,8 +23,8 @@ core.validation.check_item：五条警告规则（附件合计、实付>发票�
 
 关键约定：
 - 条目下可有多个 `Attachment`（kind ∈ invoice/payment/refund/support，support=证明材料，不参与金额与配对，ADR-0011），金额与号码（平台单号/商户单号/发票号码）挂在附件上，见 ADR-0005。
-- 条目必填归属报销批次（Batch），批次必填归属组（Django `auth.Group`，ADR-0013）。学生提交自动归本组最新批，多组用户提交时选组，导出按批。条目顺序 `position` 持久化，导出序号 = 按（类别顺序、position、id）排当前批次全量条目后的 1..N。staff 拖拽调序限类别内，行内改类别自动归尾，调序与 position 变化不留痕（ADR-0007）。
-- 可见范围统一由 `core/access.py` 判定：staff 看全部组，其他用户只看所属组的批次、条目与附件，条目付款人本人保留自己条目的查看权，但写操作要求付款人仍在组内。看板、侧边栏与 `file_serve` 都走同一套判断，`/media/` 不设静态下发路由。
+- 条目必填归属报销批次（Batch），批次必填归属组（Django `auth.Group`，ADR-0013），并记录创建人。未开启自助的组，学生提交归组最新批；开启自助的组，成员提交归自己最新创建的批次。多组用户提交时选组，导出按批。条目顺序 `position` 持久化，导出序号 = 按（类别顺序、position、id）排当前批次全量条目后的 1..N。staff 拖拽调序限类别内，行内改类别自动归尾，调序与 position 变化不留痕（ADR-0007）。
+- 可见范围统一由 `core/access.py` 判定：staff 看全部组，其他用户只看所属组的批次、条目与附件，条目付款人本人保留自己条目的查看权，但写操作要求付款人仍在组内。审核状态限 staff 或自助组里仍在该组的批次创建人，只能改状态，不能改付款人或编辑、删除他人条目。看板、侧边栏与 `file_serve` 都走同一套判断，`/media/` 不设静态下发路由。
 - 实付款 = 支付记录合计 − 退款记录合计，发票金额 = 发票附件合计。页面自动回填、服务端 `check_item` 核对一致性。
 - 媒体文件（发票/支付记录）不经 nginx，全部走 `file_serve` 鉴权路由（ADR-0002）。
 - 导出只含 `status="approved"` 条目。Excel 格式对照人工汇总表（全局连续序号、A 列小记/合计标签、D 列 SUM 公式）。
@@ -32,7 +33,7 @@ core.validation.check_item：五条警告规则（附件合计、实付>发票�
 
 ## Key Directories
 - `config/`：settings/urls/wsgi/asgi，settings 全环境变量驱动
-- `core/`：models（Batch、Category、Item、Attachment、AuditLog）、views、forms、access（组与可见范围）、validation、vision、pairing、staging（配对会话暂存）、audit、attachments（附件构造/解析共享工具）、suggest（LLM 配对/建议共享工具）、admin、management/commands（import_batch）、templates/core/
+- `core/`：models（GroupSettings、Batch、Category、Item、Attachment、AuditLog）、views、forms、access（组、可见范围与审核权限）、validation、vision、pairing、staging（配对会话暂存）、audit、attachments（附件构造/解析共享工具）、suggest（LLM 配对/建议共享工具）、admin、management/commands（import_batch）、templates/core/
 - `docs/agents/`：工程技能 harness 配置（issue tracker、分诊标签、领域文档约定）
 - `docs/adr/`：架构决策记录，`CONTEXT.md` 为领域术语表
 
@@ -50,7 +51,7 @@ uv run python manage.py import_batch <目录> [--batch 名称] [--group 组名] 
 ## Code Conventions
 - 函数视图 + `ModelForm`。权限用 `login_required` / `user_passes_test`，越权改他人条目抛 `PermissionDenied`（403）。
 - 付款人 = `owner`（Django user），真实姓名存 `first_name`，账号开通时由管理员填写。不建 Person/Student 模型。
-- 组 = Django `auth.Group`，成员关系用 `user.groups`，不使用其权限语义。不另建业务组模型。
+- 组 = Django `auth.Group`，成员关系用 `user.groups`，不使用其权限语义。不另建业务组模型，组级开关放 `GroupSettings`。建批与审核权限判断集中在 `core/access.py`。
 - 警告类业务规则唯一实现在 `core/validation.py: check_item(item)`，前端不重复实现规则本体。
 - 中文 verbose_name/choices，英文标识符。
 
