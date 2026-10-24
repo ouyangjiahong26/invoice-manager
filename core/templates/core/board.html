@@ -7,7 +7,7 @@
     <h1>报销表格</h1>
     <p class="page-desc">
       {% if current_batch %}
-        {{ current_batch.name }}{% if current_batch.archived %}（已存档）{% endif %} · 共 {{ summary.total }} 条 · 序号按本批已通过条目连续编号
+        {{ current_batch.group.name }} · {{ current_batch.name }}{% if current_batch.archived %}（已存档）{% endif %} · 共 {{ summary.total }} 条 · 序号按本批已通过条目连续编号
       {% else %}
         还没有报销批次
       {% endif %}
@@ -25,26 +25,41 @@
           <button type="submit" class="btn secondary">{% if current_batch.archived %}取消存档{% else %}存档{% endif %}</button>
         </form>
       {% endif %}
-      <button type="button" id="new-item-btn">新建条目</button>
+      {% if not current_batch.archived %}
+      <button type="button" id="new-item-btn" data-group="{{ current_batch.group_id }}">新建条目</button>
+      {% endif %}
     </div>
   {% endif %}
 </div>
 
-{% if not batches %}
+{% if user.is_staff and not groups %}
+  <div class="card empty-state">
+    <div class="empty-title">还没有组</div>
+    <p>先在后台创建组，再创建报销批次。</p>
+    <a class="btn" href="/admin/auth/group/add/">去后台建组</a>
+  </div>
+{% elif not batches %}
   <div class="card empty-state">
     {% if user.is_staff %}
       <div class="empty-title">还没有报销批次</div>
-      <p>先创建一个批次，学生提交的条目会自动归入最新批次。</p>
+      <p>选择组并创建第一个批次，学生提交的条目会自动归入本组最新批次。</p>
       <form method="post" action="{% url 'batch_add' %}" class="stack">
         {% csrf_token %}
+        <label for="new-batch-group">组</label>
+        <select id="new-batch-group" name="group" required>
+          {% for group in groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
+        </select>
         <label for="new-batch-name">批次名称</label>
         <input type="text" id="new-batch-name" name="name" maxlength="100" required
                placeholder="如：20260924 课题组报销">
         <button type="submit">创建批次</button>
       </form>
-    {% else %}
+    {% elif groups %}
       <div class="empty-title">还没有报销批次</div>
-      <p>请联系管理员创建批次后再提交。</p>
+      <p>该组还没有报销批次，请联系管理员创建批次后再提交。</p>
+    {% else %}
+      <div class="empty-title">尚未分配组</div>
+      <p>你的账号尚未分配组，请联系管理员。</p>
     {% endif %}
   </div>
 {% else %}
@@ -76,8 +91,12 @@
   <div class="board-toolbar">
     <label class="toolbar-item">批次
       <select id="batch-select">
-        {% for b in batches %}
-          <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.archived %}（已存档）{% endif %}</option>
+        {% for group, group_batches in batch_groups %}
+          <optgroup label="{{ group.name }}">
+            {% for b in group_batches %}
+              <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.archived %}（已存档）{% endif %}</option>
+            {% endfor %}
+          </optgroup>
         {% endfor %}
       </select>
     </label>
@@ -106,6 +125,9 @@
         <summary>＋ 新建批次</summary>
         <form method="post" action="{% url 'batch_add' %}">
           {% csrf_token %}
+          <select name="group" required aria-label="组">
+            {% for group in groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
+          </select>
           <input type="text" name="name" maxlength="100" required placeholder="批次名称">
           <button type="submit" class="secondary small">创建</button>
         </form>
@@ -334,8 +356,15 @@
     }
   }
   function openPanel(url) {
-    fetch(url, {credentials: "same-origin"})
-      .then(function (resp) { return resp.ok ? resp.text() : Promise.reject(); })
+    fetch(url, {credentials: "same-origin", headers: {"X-Requested-With": "fetch"}})
+      .then(function (resp) {
+        if (resp.ok) return resp.text();
+        return resp.text().then(function (body) {
+          var message = "加载侧边栏失败";
+          try { message = JSON.parse(body).error || message; } catch (e) {}
+          throw new Error(message);
+        });
+      })
       .then(function (html) {
         PANEL.innerHTML = html;
         PANEL.hidden = false;
@@ -348,7 +377,9 @@
         PANEL.scrollTop = 0;
         initPanel();
       })
-      .catch(function () { toast("加载侧边栏失败"); });
+      .catch(function (err) {
+        toast(err && err.message ? err.message : "加载侧边栏失败");
+      });
   }
   MASK.addEventListener("click", closePanel);
   document.addEventListener("keydown", function (e) {
@@ -368,7 +399,9 @@
     touchStartY = null;
   }, {passive: true});
   var newBtn = document.getElementById("new-item-btn");
-  if (newBtn) newBtn.addEventListener("click", function () { openPanel("{% url 'item_create' %}"); });
+  if (newBtn) newBtn.addEventListener("click", function () {
+    openPanel("{% url 'item_create' %}?group=" + encodeURIComponent(newBtn.dataset.group || ""));
+  });
 
   /* ---------- 表格行交互：开侧边栏 / 删除 ---------- */
   if (tbody) tbody.addEventListener("click", function (e) {

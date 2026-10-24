@@ -1,7 +1,7 @@
 """AI 导入历史批次目录：扫文件后经 vision.detect 逐张识别，规则与 LLM 配对，建成待审核条目。
 
 纯 AI 路径，不读人工汇总 xlsx。配对与字段建议和批量提交页共用 pairing/suggest。
-用法：python manage.py import_batch <目录> [--batch 名称] [--dry-run]
+用法：python manage.py import_batch <目录> [--batch 名称] [--group 组名] [--dry-run]
 """
 
 import tempfile
@@ -9,7 +9,7 @@ import zipfile
 from decimal import Decimal
 from pathlib import Path
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management.base import BaseCommand, CommandError
 
@@ -30,6 +30,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("directory", help="批次材料目录（顶层散文件 + 一级人名子目录）")
         parser.add_argument("--batch", default="", help="批次名称，缺省取目录名，同名批次复用")
+        parser.add_argument("--group", default="", help="所属组名；系统只有一个组时可省略")
         parser.add_argument("--dry-run", action="store_true", help="只打印报告，不落库")
 
     def handle(self, *args, **options):
@@ -49,22 +50,38 @@ class Command(BaseCommand):
         self.owner_notes = []    # 付款人归属说明
         self.dry_run = options["dry_run"]
 
+        group = self._resolve_group(options["group"])
         batch_name = (options["batch"] or root.name).strip()
-        batch = Batch.objects.filter(name=batch_name).first()
+        batch = Batch.objects.filter(group=group, name=batch_name).first()
         if batch is None:
             if self.dry_run:
-                self.stdout.write(f"批次：{batch_name}（dry-run，不创建）")
+                self.stdout.write(f"批次：{batch_name}（{group.name}，dry-run，不创建）")
             else:
-                batch = Batch.objects.create(name=batch_name)
-                self.stdout.write(f"已创建批次：{batch_name}")
+                batch = Batch.objects.create(name=batch_name, group=group)
+                self.stdout.write(f"已创建批次：{batch_name}（{group.name}）")
         else:
-            self.stdout.write(f"复用已有批次：{batch_name}")
+            self.stdout.write(f"复用已有批次：{batch_name}（{group.name}）")
 
         with tempfile.TemporaryDirectory() as unzip_root:
             owner_groups = self._collect_by_owner(root, Path(unzip_root))
             records_by_owner = self._recognize(owner_groups)
             created, singles = self._create_items(records_by_owner, batch)
             self._print_report(root, records_by_owner, created, singles)
+
+    @staticmethod
+    def _resolve_group(name):
+        groups = Group.objects.all()
+        if name:
+            group = groups.filter(name=name).first()
+            if group is None:
+                raise CommandError(f"组不存在：{name}")
+            return group
+        count = groups.count()
+        if count == 0:
+            raise CommandError("还没有组，请先在后台创建组")
+        if count > 1:
+            raise CommandError("存在多个组，请用 --group 指定组名")
+        return groups.first()
 
     # ---------- 收集文件 ----------
 
