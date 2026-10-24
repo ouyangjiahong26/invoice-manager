@@ -51,6 +51,7 @@
     {% else %}
     <div class="ai-summary warn">该组还没有批次，请先创建批次。</div>
     {% endif %}
+    {% if target_batch %}
     {% if vision_configured %}
     <div class="ai-summary" id="batch-summary">尚未上传文件</div>
     <form id="batch-csrf" hidden>{% csrf_token %}</form>
@@ -94,6 +95,7 @@
     </div>
     {% else %}
     <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}?group={{ selected_group.pk }}">单条提交</a>。</div>
+    {% endif %}
     {% endif %}
   </div>
 
