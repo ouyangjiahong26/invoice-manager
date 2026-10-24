@@ -1,9 +1,6 @@
-from django.conf import settings
-from django.conf.urls.static import static
 from django.contrib import admin
 from django.contrib.auth import views as auth_views
-from django.contrib.auth.decorators import login_required
-from django.urls import include, path, re_path
+from django.urls import include, path
 
 from core import views as core_views
 
@@ -18,18 +15,3 @@ urlpatterns = [
     path("accounts/session-check/", core_views.session_check, name="session-check"),
     path("", include("core.urls")),
 ]
-
-# /media/ 仅登录可访问（ADR-0002）。开发环境由 static() 兜底，生产环境保证
-# admin 中文件链接可用且不绕过鉴权。
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-else:
-    import django.views.static
-
-    urlpatterns += [
-        re_path(
-            r"^media/(?P<path>.*)$",
-            login_required(django.views.static.serve),
-            {"document_root": settings.MEDIA_ROOT},
-        ),
-    ]

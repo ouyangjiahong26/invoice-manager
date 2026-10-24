@@ -1,14 +1,76 @@
+from django import forms
 from django.contrib import admin
+from django.contrib.auth.admin import GroupAdmin, UserAdmin
+from django.contrib.auth.models import Group, User
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
 
 from .models import AuditLog, Batch, Category, Item
 
 
+class GroupAdminForm(forms.ModelForm):
+    """组页面直接维护成员，省得逐个进用户页勾选。"""
+
+    members = forms.ModelMultipleChoiceField(
+        queryset=User.objects.order_by("first_name", "username"),
+        required=False,
+        label="成员",
+        widget=forms.SelectMultiple(attrs={"size": 12}),
+    )
+
+    class Meta:
+        model = Group
+        fields = ("name",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields["members"].initial = self.instance.user_set.all()
+
+    def _save_m2m(self):
+        super()._save_m2m()
+        if self.instance.pk:
+            self.instance.user_set.set(self.cleaned_data["members"])
+
+
+admin.site.unregister(Group)
+
+
+@admin.register(Group)
+class MemberGroupAdmin(GroupAdmin):
+    form = GroupAdminForm
+    list_display = ("name", "member_count", "batch_count")
+    fields = ("name", "members")
+    filter_horizontal = ()
+    search_fields = ("name",)
+    ordering = ("id",)
+
+    @admin.display(description="成员数")
+    def member_count(self, obj):
+        return obj.user_set.count()
+
+    @admin.display(description="批次")
+    def batch_count(self, obj):
+        return obj.batches.count()
+
+
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class MemberUserAdmin(UserAdmin):
+    list_display = ("username", "first_name", "group_names", "is_active", "is_staff")
+    list_filter = ("groups", "is_active", "is_staff", "is_superuser")
+
+    @admin.display(description="组")
+    def group_names(self, obj):
+        return "、".join(obj.groups.values_list("name", flat=True)) or "—"
+
+
 @admin.register(Item)
 class ItemAdmin(admin.ModelAdmin):
-    list_display = ("title", "payer_name", "category", "batch", "actual_amount", "invoice_amount", "status", "created_at")
-    list_filter = ("status", "category", "batch")
+    list_display = ("title", "payer_name", "category", "group", "batch", "actual_amount", "invoice_amount", "status", "created_at")
+    list_filter = ("status", "category", "batch__group", "batch")
     search_fields = (
         "title", "owner__username", "owner__first_name",
         "attachments__order_no", "attachments__merchant_no", "attachments__invoice_no",
@@ -55,6 +117,10 @@ class ItemAdmin(admin.ModelAdmin):
     @admin.display(description="付款人")
     def payer_name(self, obj):
         return obj.payer_name
+
+    @admin.display(description="组")
+    def group(self, obj):
+        return obj.batch.group.name
 
     @admin.action(description="标记为已通过")
     def approve_items(self, request, queryset):
@@ -118,7 +184,8 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
-    list_display = ("name", "created_at", "archived", "item_count")
+    list_display = ("name", "group", "created_at", "archived", "item_count")
+    list_filter = ("group", "archived")
     list_editable = ("archived",)
     search_fields = ("name",)
 
