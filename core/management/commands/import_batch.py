@@ -57,7 +57,9 @@ class Command(BaseCommand):
             if self.dry_run:
                 self.stdout.write(f"批次：{batch_name}（{group.name}，dry-run，不创建）")
             else:
-                batch = Batch.objects.create(name=batch_name, group=group)
+                batch = Batch.objects.create(
+                    name=batch_name, group=group, created_by=self.executor
+                )
                 self.stdout.write(f"已创建批次：{batch_name}（{group.name}）")
         else:
             self.stdout.write(f"复用已有批次：{batch_name}（{group.name}）")

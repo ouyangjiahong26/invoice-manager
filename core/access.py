@@ -14,6 +14,33 @@ def can_access_group(user, group):
     return user.is_staff or user.groups.filter(pk=group.pk).exists()
 
 
+def group_is_self_service(group):
+    """组是否开启成员自助：成员可建批，并审批自己创建的批次。"""
+    settings_obj = getattr(group, "settings", None)
+    return bool(settings_obj and settings_obj.self_service)
+
+
+def can_create_batch(user, group):
+    if user.is_staff:
+        return True
+    return can_access_group(user, group) and group_is_self_service(group)
+
+
+def can_review_batch(user, batch):
+    """批次可审批：管理员，或自助组里仍在该组的批次创建人。"""
+    if user.is_staff:
+        return True
+    return (
+        batch.created_by_id == user.id
+        and group_is_self_service(batch.group)
+        and can_access_group(user, batch.group)
+    )
+
+
+def can_review_item(user, item):
+    return can_review_batch(user, item.batch)
+
+
 def can_view_item(user, item):
     """条目可见：管理员、条目付款人本人、与条目所属组同组的用户。"""
     if user.is_staff or item.owner_id == user.id:

@@ -5,7 +5,7 @@ from django.contrib.auth.models import Group, User
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
 
-from .models import AuditLog, Batch, Category, Item
+from .models import AuditLog, Batch, Category, GroupSettings, Item
 
 
 class GroupAdminForm(forms.ModelForm):
@@ -17,6 +17,11 @@ class GroupAdminForm(forms.ModelForm):
         label="成员",
         widget=forms.SelectMultiple(attrs={"size": 12}),
     )
+    self_service = forms.BooleanField(
+        required=False,
+        label="成员可自建批次并审批自己的批次",
+        help_text="开启后，组成员可以创建批次，并审批自己创建批次中的条目",
+    )
 
     class Meta:
         model = Group
@@ -26,11 +31,19 @@ class GroupAdminForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.instance.pk:
             self.fields["members"].initial = self.instance.user_set.all()
+            settings_obj = getattr(self.instance, "settings", None)
+            self.fields["self_service"].initial = bool(
+                settings_obj and settings_obj.self_service
+            )
 
     def _save_m2m(self):
         super()._save_m2m()
         if self.instance.pk:
             self.instance.user_set.set(self.cleaned_data["members"])
+            GroupSettings.objects.update_or_create(
+                group=self.instance,
+                defaults={"self_service": self.cleaned_data["self_service"]},
+            )
 
 
 admin.site.unregister(Group)
@@ -40,7 +53,7 @@ admin.site.unregister(Group)
 class MemberGroupAdmin(GroupAdmin):
     form = GroupAdminForm
     list_display = ("name", "member_count", "batch_count")
-    fields = ("name", "members")
+    fields = ("name", "members", "self_service")
     filter_horizontal = ()
     search_fields = ("name",)
     ordering = ("id",)
@@ -184,10 +197,11 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
-    list_display = ("name", "group", "created_at", "archived", "item_count")
+    list_display = ("name", "group", "created_by", "created_at", "archived", "item_count")
     list_filter = ("group", "archived")
     list_editable = ("archived",)
-    search_fields = ("name",)
+    list_select_related = ("group", "created_by")
+    search_fields = ("name", "created_by__username", "created_by__first_name")
 
     @admin.display(description="条目数")
     def item_count(self, obj):
