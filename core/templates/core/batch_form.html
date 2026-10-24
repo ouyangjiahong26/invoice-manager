@@ -21,8 +21,29 @@
   </div>
 </div>
 
+{% if not groups %}
+<div class="card empty-state">
+  {% if user.is_staff %}
+    <div class="empty-title">还没有组</div>
+    <p>先在后台创建组，再提交条目。</p>
+    <a class="btn" href="/admin/auth/group/add/">去后台建组</a>
+  {% else %}
+    <div class="empty-title">尚未分配组</div>
+    <p>你的账号尚未分配组，请联系管理员。</p>
+  {% endif %}
+</div>
+{% else %}
 <div class="batch-layout">
   <div class="card">
+    {% if show_group_selector %}
+    <label for="batch-group" class="field-label">组</label>
+    <select id="batch-group">
+      {% for group in groups %}
+        <option value="{{ group.pk }}" {% if selected_group.pk == group.pk %}selected{% endif %}>{{ group.name }}</option>
+      {% endfor %}
+    </select>
+    <div class="helptext">提交到所选组的最新批次。</div>
+    {% endif %}
     {% if vision_configured %}
     <div class="ai-summary" id="batch-summary">尚未上传文件</div>
     <form id="batch-csrf" hidden>{% csrf_token %}</form>
@@ -65,7 +86,7 @@
       </div>
     </div>
     {% else %}
-    <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}">单条提交</a>。</div>
+    <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}?group={{ selected_group.pk }}">单条提交</a>。</div>
     {% endif %}
   </div>
 
@@ -143,6 +164,11 @@
   var agentRoundUrl = "{% url 'batch_agent_round' %}";
   var submitUrl = "{% url 'batch_submit' %}";
   var boardUrl = "{% url 'board' %}";
+  var GROUP_ID = "{{ selected_group.pk|default:'' }}";
+  function selectedGroupId() {
+    var select = document.getElementById("batch-group");
+    return select ? select.value : GROUP_ID;
+  }
   var categories = JSON.parse(document.getElementById("categories-data").textContent);
   var MAX_FILES = {{ max_files }};
 
@@ -1036,7 +1062,7 @@
       credentials: "same-origin",
       redirect: "manual",
       headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
-      body: JSON.stringify({session_id: sessionId, groups: planGroups})
+      body: JSON.stringify({session_id: sessionId, groups: planGroups, group: selectedGroupId()})
     })
       .then(function (resp) {
         // 成功后 302 跳到看板：manual 不跟随跳转，保住 messages 只在落地页渲染一次
@@ -1055,4 +1081,5 @@
   refreshSummary();
 })();
 </script>
+{% endif %}
 {% endblock %}

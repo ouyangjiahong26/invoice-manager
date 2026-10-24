@@ -17,19 +17,29 @@ class Category(models.Model):
 
 
 class Batch(models.Model):
-    name = models.CharField("批次名称", max_length=100, unique=True)
+    name = models.CharField("批次名称", max_length=100)
+    group = models.ForeignKey(
+        "auth.Group",
+        on_delete=models.PROTECT,
+        related_name="batches",
+        verbose_name="组",
+    )
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     archived = models.BooleanField("已存档", default=False, help_text="存档批次只读：条目与附件不可增改删")
-
 
     class Meta:
         # 创建时间完全相同（时钟精度不足时可能发生）会并列，用 id 兜底保证“最新批次”确定
         ordering = ["-created_at", "-id"]
         verbose_name = "报销批次"
         verbose_name_plural = "报销批次"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["group", "name"], name="unique_batch_name_per_group"
+            )
+        ]
 
     def __str__(self):
-        return self.name
+        return f"{self.group.name} · {self.name}"
 
 
 class Item(models.Model):

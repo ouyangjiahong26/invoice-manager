@@ -11,11 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from django.conf import settings
 from django.contrib import admin
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.contrib.messages.storage.cookie import CookieStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import IntegrityError, transaction
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -73,7 +76,8 @@ class SubmissionTestCase(TestCase):
         self.category, _ = Category.objects.get_or_create(
             name="信息服务费", defaults={"order": 0}
         )
-        self.batch = Batch.objects.create(name="2025 报销批次")
+        self.group, _ = Group.objects.get_or_create(name="实验班")
+        self.batch = Batch.objects.create(name="2025 报销批次", group=self.group)
         self.student = User.objects.create_user(
             "zhangsan22", password="pw", first_name="张三"
         )
@@ -83,6 +87,7 @@ class SubmissionTestCase(TestCase):
         self.staff = User.objects.create_user(
             "admin22", password="pw", first_name="管理员", is_staff=True
         )
+        self.group.user_set.add(self.student, self.student_b, self.staff)
         self.factory = RequestFactory()
 
     def _create_item(self, user, **overrides):
@@ -1509,8 +1514,8 @@ class BatchAgentRoundTests(SubmissionTestCase):
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class BoardTableTests(SubmissionTestCase):
     def test_defaults_to_latest_batch_with_seq(self):
-        older = Batch.objects.create(name="旧批次")
-        Batch.objects.create(name="新批次")
+        older = Batch.objects.create(name="旧批次", group=self.group)
+        Batch.objects.create(name="新批次", group=self.group)
         Item.objects.create(owner=self.student, title="旧条目", category=self.category,
                             batch=older, actual_amount="1.00", position=1)
         item = self._create_item(self.student)  # 归最新批（新批次）
@@ -1612,11 +1617,231 @@ class BoardTableTests(SubmissionTestCase):
 
     def test_latest_batch_wins_when_timestamps_tie(self):
         """创建时间完全相同时按 id 兜底，最新批次仍是后创建的那个。"""
-        newer = Batch.objects.create(name="并列批次 B")
+        newer = Batch.objects.create(name="并列批次 B", group=self.group)
         stamp = timezone.now()
         Batch.objects.filter(pk__in=[self.batch.pk, newer.pk]).update(created_at=stamp)
 
         self.assertEqual(Batch.objects.first(), newer)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
+class GroupIsolationTests(SubmissionTestCase):
+    """组隔离：学生只看本组批次与条目，管理员看全部，多组用户看两组。"""
+
+    def setUp(self):
+        super().setUp()
+        self.other_group = Group.objects.create(name="课题组")
+        self.other_user = User.objects.create_user(
+            "wangwu23", password="pw", first_name="王五"
+        )
+        self.other_group.user_set.add(self.other_user)
+        self.other_batch = Batch.objects.create(name="课题组批次", group=self.other_group)
+        self.other_item = Item.objects.create(
+            owner=self.other_user, title="他组条目", category=self.category,
+            batch=self.other_batch, actual_amount="9.00", position=1,
+        )
+
+    def test_board_hides_other_group(self):
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertContains(response, self.batch.name)
+        self.assertNotContains(response, self.other_batch.name)
+        self.assertNotContains(response, "他组条目")
+
+    def test_staff_sees_all_groups(self):
+        self.client.force_login(self.staff)
+        response = self.client.get("/", {"batch": self.other_batch.pk})
+        self.assertContains(response, "他组条目")
+        self.assertContains(response, self.other_batch.name)
+        self.assertContains(response, self.batch.name)  # 批次下拉仍列出实验班批次
+
+    def test_multi_group_user_sees_both(self):
+        self.student.groups.add(self.other_group)
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertContains(response, self.other_batch.name)
+        self.assertContains(response, self.batch.name)
+        self.assertContains(response, "他组条目")  # 默认取最新批次（课题组批）
+
+    def test_batch_page_group_selector_only_for_multi_group(self):
+        self.client.force_login(self.student)
+        self.assertNotContains(self.client.get("/items/batch/"), 'id="batch-group"')
+        self.student.groups.add(self.other_group)
+        self.assertContains(self.client.get("/items/batch/"), 'id="batch-group"')
+
+    def test_foreign_batch_falls_back_to_own(self):
+        self.client.force_login(self.student)
+        response = self.client.get("/", {"batch": self.other_batch.pk})
+        self.assertContains(response, self.batch.name)
+        self.assertNotContains(response, self.other_batch.name)
+        self.assertNotContains(response, "他组条目")
+
+    def test_item_create_foreign_group_forbidden(self):
+        self.client.force_login(self.student)
+        response = self.client.get(f"/items/new/?group={self.other_group.pk}")
+        self.assertEqual(response.status_code, 403)
+
+    def test_unassigned_user_gets_messages(self):
+        user = User.objects.create_user("nogroup", password="pw")
+        self.client.force_login(user)
+        self.assertContains(self.client.get("/"), "尚未分配组")
+        self.assertContains(self.client.get("/items/batch/"), "尚未分配组")
+        self.assertRedirects(self.client.get("/items/new/"), "/")
+        response = self.client.get("/items/new/", HTTP_X_REQUESTED_WITH="fetch")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("尚未分配组", response.json()["error"])
+
+        stage = self.client.post("/items/batch/stage/", {"files": [_png_upload("x.png")]})
+        payload = stage.json()
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({
+                "session_id": payload["session_id"],
+                "groups": [{
+                    "title": "打印费", "category": self.category.pk,
+                    "actual_amount": "5.00", "invoice_amount": "5.00",
+                    "files": [{"file_id": payload["files"][0]["id"],
+                               "kind": "invoice", "amount": "5.00"}],
+                }],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("尚未分配组", response.json()["error"])
+
+    def test_batch_name_unique_within_group(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Batch.objects.create(name=self.batch.name, group=self.group)
+        Batch.objects.create(name=self.batch.name, group=self.other_group)
+
+    def test_default_group_prefers_open_batch(self):
+        from .views import _default_group
+        empty = Group.objects.create(name="空组")
+        self.assertEqual(_default_group([empty, self.group]), self.group)
+
+    def test_removed_owner_keeps_read_but_loses_write(self):
+        item = Item.objects.create(
+            owner=self.student, title="离组条目", category=self.category,
+            batch=self.batch, actual_amount="2.00", position=3,
+        )
+        attachment = Attachment.objects.create(
+            item=item, kind=Attachment.KIND_INVOICE,
+            file=SimpleUploadedFile("own.png", PNG_1X1, content_type="image/png"),
+            amount=Decimal("2.00"),
+        )
+        self.student.groups.remove(self.group)
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.get(f"/items/{item.pk}/panel/").status_code, 200)
+        self.assertEqual(
+            self.client.get(f"/items/attachments/{attachment.pk}/file/").status_code, 200)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "title", "value": "改标题"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.client.post(f"/items/{item.pk}/delete/").status_code, 403)
+        self.assertEqual(
+            self.client.post(
+                f"/items/attachments/{attachment.pk}/edit/", {"amount": "3.00"}
+            ).status_code,
+            403,
+        )
+        self.assertTrue(Item.objects.filter(pk=item.pk).exists())
+
+    def test_media_route_not_served(self):
+        media_file = Path(settings.MEDIA_ROOT) / "attachments" / "leak.png"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(PNG_1X1)
+        self.client.force_login(self.student)
+        self.assertEqual(
+            self.client.get("/media/attachments/leak.png").status_code, 404)
+
+    def test_other_group_item_panel_and_file_forbidden(self):
+        attachment = Attachment.objects.create(
+            item=self.other_item, kind=Attachment.KIND_INVOICE,
+            file=SimpleUploadedFile("other.png", PNG_1X1, content_type="image/png"),
+            amount=Decimal("9.00"),
+        )
+        self.client.force_login(self.student)
+        self.assertEqual(
+            self.client.get(f"/items/{self.other_item.pk}/panel/").status_code, 403)
+        self.assertEqual(
+            self.client.get(f"/items/attachments/{attachment.pk}/file/").status_code, 403)
+
+        own_item = Item.objects.create(
+            owner=self.student, title="同组条目", category=self.category,
+            batch=self.batch, actual_amount="1.00", position=2,
+        )
+        own_attachment = Attachment.objects.create(
+            item=own_item, kind=Attachment.KIND_INVOICE,
+            file=SimpleUploadedFile("own.png", PNG_1X1, content_type="image/png"),
+            amount=Decimal("1.00"),
+        )
+        self.client.force_login(self.student_b)  # 同组可读
+        self.assertEqual(
+            self.client.get(f"/items/attachments/{own_attachment.pk}/file/").status_code, 200)
+
+    def test_item_create_stays_in_own_group(self):
+        # 他组批次创建更晚，仍不能把本组学生的条目带过去
+        self.client.force_login(self.student)
+        response = self.client.post("/items/new/", _item_data(category=self.category.pk))
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, self.batch)
+
+    def test_multi_group_item_create_uses_selected_group(self):
+        self.student.groups.add(self.other_group)
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/new/",
+            _item_data(category=self.category.pk, group=self.other_group.pk),
+        )
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, self.other_batch)
+
+    def test_batch_submit_uses_selected_group(self):
+        self.student.groups.add(self.other_group)
+        session_id, file_ids = self._stage([
+            _png_upload("invoice.png"), _png_upload("payment.png")])
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({
+                "session_id": session_id,
+                "group": self.group.pk,
+                "groups": [{
+                    "title": "打印费", "category": self.category.pk,
+                    "actual_amount": "5.00", "invoice_amount": "5.00",
+                    "files": [
+                        {"file_id": file_ids[0], "kind": "invoice", "amount": "5.00"},
+                        {"file_id": file_ids[1], "kind": "payment", "amount": "5.00"},
+                    ],
+                }],
+            }),
+            content_type="application/json",
+        )
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, self.batch)
+
+    def test_batch_submit_foreign_group_forbidden(self):
+        session_id, file_ids = self._stage([_png_upload("invoice.png")])
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({
+                "session_id": session_id,
+                "group": self.other_group.pk,
+                "groups": [{
+                    "title": "打印费", "category": self.category.pk,
+                    "actual_amount": "5.00", "invoice_amount": "5.00",
+                    "files": [{"file_id": file_ids[0], "kind": "invoice", "amount": "5.00"}],
+                }],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("无权", response.json()["error"])
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
@@ -1853,14 +2078,14 @@ class ExportBatchTests(SubmissionTestCase):
 
     def test_batches_isolated_with_batch_filename(self):
         item = self._approve(self._create_item(self.student))
-        other_batch = Batch.objects.create(name="第二批")
+        other_batch = Batch.objects.create(name="第二批", group=self.group)
         self._approve(Item.objects.create(
             owner=self.student, title="他批条目", category=self.category,
             batch=other_batch, actual_amount="9.00", position=99,
         ))
         self.client.force_login(self.staff)
         response = self.client.get("/export/excel/", {"batch": self.batch.pk})
-        self.assertIn("报销汇总_2025 报销批次.xlsx", _content_disposition(response))
+        self.assertIn("报销汇总_实验班_2025 报销批次.xlsx", _content_disposition(response))
         sheet = load_workbook(BytesIO(response.content)).active
         titles = [sheet.cell(row=r, column=2).value for r in range(2, sheet.max_row + 1)]
         self.assertIn("硬盘", titles)
@@ -1881,7 +2106,7 @@ class ExportBatchTests(SubmissionTestCase):
                             status=Item.STATUS_APPROVED)
         self.client.force_login(self.staff)
         response = self.client.get("/export/zip/", {"batch": self.batch.pk})
-        self.assertIn("报销材料_2025 报销批次.zip", _content_disposition(response))
+        self.assertIn("报销材料_实验班_2025 报销批次.zip", _content_disposition(response))
 
     def test_excel_seq_follows_position(self):
         Item.objects.create(owner=self.student, title="后提交排前", category=self.category,
@@ -1916,7 +2141,7 @@ class ArchivedBatchLockTests(SubmissionTestCase):
 
     def setUp(self):
         super().setUp()
-        self.archived = Batch.objects.create(name="2025 存档批", archived=True)
+        self.archived = Batch.objects.create(name="2025 存档批", group=self.group, archived=True)
         self.a_item = Item.objects.create(
             owner=self.student, batch=self.archived, category=self.category,
             title="存档条目", actual_amount=Decimal("10"), position=Item.next_position(),
@@ -1972,6 +2197,7 @@ class ArchivedBatchLockTests(SubmissionTestCase):
         self.assertContains(response, "（已存档）")
         self.assertNotContains(response, '<td class="drag-handle"')
         self.assertNotContains(response, 'class="danger small row-del"')
+        self.assertNotContains(response, 'id="new-item-btn"')
         panel = self.client.get(f"/items/{self.a_item.pk}/panel/")
         self.assertIsNone(panel.context.get("form"))
         self.assertContains(panel, "已存档")
@@ -1988,20 +2214,71 @@ class ArchivedBatchLockTests(SubmissionTestCase):
 class BatchAddTests(SubmissionTestCase):
     def test_staff_creates_batch(self):
         self.client.force_login(self.staff)
-        response = self.client.post("/batches/add/", {"name": "20261008 报销"})
+        response = self.client.post("/batches/add/", {"name": "20261008 报销", "group": self.group.pk})
         self.assertRedirects(response, "/")
         self.assertTrue(Batch.objects.filter(name="20261008 报销").exists())
 
     def test_student_forbidden(self):
         self.client.force_login(self.student)
-        self.assertEqual(self.client.post("/batches/add/", {"name": "x"}).status_code, 403)
+        self.assertEqual(self.client.post("/batches/add/", {"name": "x", "group": self.group.pk}).status_code, 403)
         self.assertFalse(Batch.objects.filter(name="x").exists())
 
     def test_duplicate_name_rejected(self):
         self.client.force_login(self.staff)
-        response = self.client.post("/batches/add/", {"name": self.batch.name}, follow=True)
+        response = self.client.post("/batches/add/", {"name": self.batch.name, "group": self.group.pk}, follow=True)
         self.assertContains(response, "已存在")
         self.assertEqual(Batch.objects.filter(name=self.batch.name).count(), 1)
+
+    def test_group_required(self):
+        self.client.force_login(self.staff)
+        response = self.client.post("/batches/add/", {"name": "无组批次"}, follow=True)
+        self.assertContains(response, "请选择组")
+        self.assertFalse(Batch.objects.filter(name="无组批次").exists())
+
+    def test_same_name_allowed_in_other_group(self):
+        other_group = Group.objects.create(name="课题组")
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            "/batches/add/", {"name": self.batch.name, "group": other_group.pk})
+        self.assertRedirects(response, "/")
+        self.assertTrue(
+            Batch.objects.filter(group=other_group, name=self.batch.name).exists())
+
+
+class AdminPagesTests(TestCase):
+    """后台组、用户、批次页面可正常渲染（组页面含成员多选）。"""
+
+    def setUp(self):
+        self.root = User.objects.create_superuser("root", "root@example.com", "pw")
+        self.client.force_login(self.root)
+
+    def test_admin_pages_render(self):
+        group = Group.objects.create(name="课题组")
+        for url in (
+            "/admin/auth/group/add/",
+            f"/admin/auth/group/{group.pk}/change/",
+            "/admin/auth/user/add/",
+            "/admin/core/batch/add/",
+            "/admin/core/batch/",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_group_admin_updates_members(self):
+        group = Group.objects.create(name="课题组")
+        response = self.client.post(
+            f"/admin/auth/group/{group.pk}/change/",
+            {"name": "课题组", "members": [self.root.pk]},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(group.user_set.filter(pk=self.root.pk).exists())
+
+    def test_group_admin_keeps_inactive_members(self):
+        group = Group.objects.create(name="课题组")
+        inactive = User.objects.create_user("gone", password="x", is_active=False)
+        group.user_set.add(inactive)
+        response = self.client.get(f"/admin/auth/group/{group.pk}/change/")
+        self.assertContains(response, f'value="{inactive.pk}" selected')
 
 
 class BatchArchiveTests(SubmissionTestCase):
@@ -2160,6 +2437,27 @@ class ImportBatchCommandTests(SubmissionTestCase):
                 out = self.call(tmp, "--batch", "导入测试批")
         self.assertEqual(Item.objects.count(), 0)
         self.assertIn("payment.jpg", out)
+
+    def test_multiple_groups_require_group_argument(self):
+        Group.objects.create(name="课题组")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesMessage(CommandError, "--group"):
+                self.call(tmp)
+
+    def test_group_argument_creates_batch_in_group(self):
+        group = Group.objects.create(name="课题组")
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
+            with mock.patch("core.vision.detect") as detect:
+                detect.side_effect = [
+                    {"kind": "invoice", "invoice_amount": 100},
+                    {"kind": "payment", "amount": 100, "order_no": ALIPAY_ORDER_NO},
+                ]
+                with mock.patch("core.vision.field_suggest", return_value={"suggestions": []}):
+                    out = self.call(tmp, "--batch", "导入测试批", "--group", "课题组")
+        batch = Batch.objects.get(name="导入测试批")
+        self.assertEqual(batch.group, group)
+        self.assertIn("课题组", out)
 
     def test_dry_run_creates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
