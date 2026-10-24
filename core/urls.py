@@ -23,6 +23,7 @@ urlpatterns = [
     path("items/batch/submit/", views.batch_submit, name="batch_submit"),
     path("items/prefill/", views.prefill, name="item_prefill"),
     path("batches/add/", views.batch_add, name="batch_add"),
+    path("batches/<int:pk>/archive/", views.batch_archive, name="batch_archive"),
     path("export/excel/", views.export_excel, name="export_excel"),
     path("export/zip/", views.export_zip, name="export_zip"),
 ]

@@ -2,115 +2,193 @@
 {% block title %}报销表格{% endblock %}
 
 {% block content %}
-<h1>报销表格</h1>
+<div class="page-head">
+  <div>
+    <h1>报销表格</h1>
+    <p class="page-desc">
+      {% if current_batch %}
+        {{ current_batch.group.name }} · {{ current_batch.name }}{% if current_batch.archived %}（已存档）{% endif %} · 共 {{ summary.total }} 条 · 序号按本批已通过条目连续编号
+      {% else %}
+        还没有报销批次
+      {% endif %}
+    </p>
+  </div>
+  {% if batches %}
+    <div class="page-actions">
+      {% if user.is_staff %}
+        <a class="btn secondary" href="{{ download_origin }}{% url 'export_excel' %}?batch={{ current_batch.pk }}">导出 Excel</a>
+        <a class="btn secondary" href="{{ download_origin }}{% url 'export_zip' %}?batch={{ current_batch.pk }}">导出 zip</a>
+        <form method="post" action="{% url 'batch_archive' current_batch.pk %}"
+              onsubmit="return confirm('{% if current_batch.archived %}取消存档后该批条目与附件恢复可编辑，确定取消存档？{% else %}存档后该批条目与附件对所有人只读，确定存档？{% endif %}')">
+          {% csrf_token %}
+          <input type="hidden" name="archived" value="{% if current_batch.archived %}0{% else %}1{% endif %}">
+          <button type="submit" class="btn secondary">{% if current_batch.archived %}取消存档{% else %}存档{% endif %}</button>
+        </form>
+      {% endif %}
+      {% if not current_batch.archived %}
+      <button type="button" id="new-item-btn" data-group="{{ current_batch.group_id }}">新建条目</button>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
 
-{% if not batches %}
-  <div class="card">
+{% if user.is_staff and not groups %}
+  <div class="card empty-state">
+    <div class="empty-title">还没有组</div>
+    <p>先在后台创建组，再创建报销批次。</p>
+    <a class="btn" href="/admin/auth/group/add/">去后台建组</a>
+  </div>
+{% elif not batches %}
+  <div class="card empty-state">
     {% if user.is_staff %}
-      <p>还没有报销批次。创建第一个批次后即可提交条目：</p>
-      <form method="post" action="{% url 'batch_add' %}" class="stack" style="max-width:420px">
+      <div class="empty-title">还没有报销批次</div>
+      <p>选择组并创建第一个批次，学生提交的条目会自动归入本组最新批次。</p>
+      <form method="post" action="{% url 'batch_add' %}" class="stack">
         {% csrf_token %}
+        <label for="new-batch-group">组</label>
+        <select id="new-batch-group" name="group" required>
+          {% for group in groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
+        </select>
         <label for="new-batch-name">批次名称</label>
         <input type="text" id="new-batch-name" name="name" maxlength="100" required
                placeholder="如：20260924 课题组报销">
         <button type="submit">创建批次</button>
       </form>
+    {% elif groups %}
+      <div class="empty-title">还没有报销批次</div>
+      <p>该组还没有报销批次，请联系管理员创建批次后再提交。</p>
     {% else %}
-      <p>还没有报销批次，请联系管理员创建批次后再提交。</p>
+      <div class="empty-title">尚未分配组</div>
+      <p>你的账号尚未分配组，请联系管理员。</p>
     {% endif %}
   </div>
 {% else %}
 
-<div class="toolbar">
-  <label class="toolbar-item">批次
-    <select id="batch-select">
-      {% for b in batches %}
-        <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.archived %}（已存档）{% endif %}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <label class="toolbar-item">类别
-    <select id="category-select">
-      <option value="">全部</option>
-      {% for c in categories %}
-        <option value="{{ c.pk }}" {% if category_id == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <label class="toolbar-item">付款人
-    <select id="payer-select">
-      <option value="">全部</option>
-      {% for p in payers %}
-        <option value="{{ p.pk }}" {% if payer_id == p.pk|stringformat:"s" %}selected{% endif %}>{{ p.get_full_name|default:p.username }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <form id="search-form" class="toolbar-item">
-    <input type="search" id="search-input" placeholder="搜索明细…" value="{{ q }}">
-  </form>
-
-  <span class="spacer"></span>
-
-  {% if user.is_staff %}
-    <details class="new-batch">
-      <summary>＋ 新建批次</summary>
-      <form method="post" action="{% url 'batch_add' %}">
-        {% csrf_token %}
-        <input type="text" name="name" maxlength="100" required placeholder="批次名称">
-        <button type="submit" class="secondary small">创建</button>
-      </form>
-    </details>
-    <a class="btn" href="{{ download_origin }}{% url 'export_excel' %}?batch={{ current_batch.pk }}">导出 Excel</a>
-    <a class="btn" href="{{ download_origin }}{% url 'export_zip' %}?batch={{ current_batch.pk }}">导出 zip</a>
-  {% endif %}
-  <button type="button" id="new-item-btn">＋ 新建条目</button>
+<div class="stat-grid">
+  <div class="stat">
+    <div class="stat-label">本批条目</div>
+    <div class="stat-value">{{ summary.total }}</div>
+    <div class="stat-hint">{{ current_batch.name }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">待审核</div>
+    <div class="stat-value tone-warning">{{ summary.pending }}</div>
+    <div class="stat-hint">等待管理员处理</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">已通过</div>
+    <div class="stat-value tone-success">{{ summary.approved }}</div>
+    <div class="stat-hint">计入导出序号</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">实付款合计</div>
+    <div class="stat-value">¥{{ summary.actual_total|floatformat:2 }}</div>
+    <div class="stat-hint">发票金额 ¥{{ summary.invoice_total|floatformat:2 }}</div>
+  </div>
 </div>
 
-<div class="filters" id="status-filters">
-  <a data-status="">全部</a>
-  {% for value, label in status_choices %}
-    <a data-status="{{ value }}">{{ label }}</a>
-  {% endfor %}
-</div>
-
-<div class="table-wrap">
-  <table class="board-table" id="board-table">
-    <thead>
-      <tr>
-        {% if user.is_staff and not current_batch.archived %}<th class="drag-col"></th>{% endif %}
-        <th class="sortable num" data-col="seq">序号</th>
-        <th class="sortable">明细</th>
-        <th class="sortable">类别</th>
-        <th class="sortable num">实付款</th>
-        <th class="sortable num">发票金额</th>
-        <th class="sortable">付款人</th>
-        <th class="sortable">状态</th>
-        <th>附件</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody id="board-tbody">
-      {% for row in rows %}
-      <tr data-pk="{{ row.item.pk }}"
-          data-category-id="{{ row.item.category_id }}" data-owner-id="{{ row.item.owner_id }}"
-          data-status="{{ row.item.status }}">
-        {% if user.is_staff and not current_batch.archived %}<td class="drag-handle" title="拖拽调整类别内顺序">⋮⋮</td>{% endif %}
-        <td class="num seq" data-label="序号">{{ row.seq|default_if_none:"—" }}</td>
-        <td class="cell-title{% if row.can_edit %} editable{% endif %}" data-field="title">{{ row.item.title }}</td>
-        <td class="cell-category{% if row.can_edit %} editable{% endif %}" data-field="category" data-label="类别">{{ row.item.category.name }}</td>
-        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="actual_amount" data-label="实付款">{{ row.item.actual_amount }}</td>
-        <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="invoice_amount" data-label="发票金额">{% if row.item.invoice_amount %}{{ row.item.invoice_amount }}{% endif %}</td>
-        <td class="cell-payer{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="payer" data-label="付款人">{{ row.item.payer_name }}</td>
-        <td class="cell-status{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="status" data-label="状态"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
-        <td class="attach-count" data-label="附件"
-            title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}{% if row.counts.support %} · 证明 {{ row.counts.support }}{% endif %}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}{% if row.counts.support %}/{{ row.counts.support }}{% endif %}</td>
-        <td class="cell-actions">{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
-      </tr>
-      {% empty %}
-      <tr class="empty-row"><td colspan="{% if user.is_staff %}10{% else %}9{% endif %}">当前筛选下没有条目</td></tr>
+<div class="board-card">
+  <div class="board-toolbar">
+    <label class="toolbar-item">批次
+      <select id="batch-select">
+        {% for group, group_batches in batch_groups %}
+          <optgroup label="{{ group.name }}">
+            {% for b in group_batches %}
+              <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.archived %}（已存档）{% endif %}</option>
+            {% endfor %}
+          </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="toolbar-item">类别
+      <select id="category-select">
+        <option value="">全部</option>
+        {% for c in categories %}
+          <option value="{{ c.pk }}" {% if category_id == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="toolbar-item">付款人
+      <select id="payer-select">
+        <option value="">全部</option>
+        {% for p in payers %}
+          <option value="{{ p.pk }}" {% if payer_id == p.pk|stringformat:"s" %}selected{% endif %}>{{ p.get_full_name|default:p.username }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <form id="search-form" class="toolbar-item">
+      <input type="search" id="search-input" placeholder="搜索明细" value="{{ q }}">
+    </form>
+    <span class="spacer"></span>
+    {% if user.is_staff %}
+      <details class="new-batch">
+        <summary>＋ 新建批次</summary>
+        <form method="post" action="{% url 'batch_add' %}">
+          {% csrf_token %}
+          <select name="group" required aria-label="组">
+            {% for group in groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
+          </select>
+          <input type="text" name="name" maxlength="100" required placeholder="批次名称">
+          <button type="submit" class="secondary small">创建</button>
+        </form>
+      </details>
+    {% endif %}
+  </div>
+  <div class="board-toolbar">
+    <div class="seg" id="status-filters">
+      <a data-status="">全部</a>
+      {% for value, label in status_choices %}
+        <a data-status="{{ value }}">{{ label }}</a>
       {% endfor %}
-    </tbody>
-  </table>
+    </div>
+    <span class="spacer"></span>
+    <span class="helptext">
+      {% if user.is_staff and not current_batch.archived %}
+        点击行编辑，拖动行首在类别内调序，点状态改审核结果
+      {% else %}
+        点击行查看详情与附件
+      {% endif %}
+    </span>
+  </div>
+  <div class="table-wrap">
+    <table class="board-table" id="board-table">
+      <thead>
+        <tr>
+          {% if user.is_staff and not current_batch.archived %}<th class="drag-col"></th>{% endif %}
+          <th class="sortable num" data-col="seq">序号</th>
+          <th class="sortable">明细</th>
+          <th class="sortable">类别</th>
+          <th class="sortable num">实付款</th>
+          <th class="sortable num">发票金额</th>
+          <th class="sortable">付款人</th>
+          <th class="sortable">状态</th>
+          <th>附件</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="board-tbody">
+        {% for row in rows %}
+        <tr data-pk="{{ row.item.pk }}"
+            data-category-id="{{ row.item.category_id }}" data-owner-id="{{ row.item.owner_id }}"
+            data-status="{{ row.item.status }}">
+          {% if user.is_staff and not current_batch.archived %}<td class="drag-handle" title="拖拽调整类别内顺序">⋮⋮</td>{% endif %}
+          <td class="num seq" data-label="序号">{{ row.seq|default_if_none:"—" }}</td>
+          <td class="cell-title{% if row.can_edit %} editable{% endif %}" data-field="title">{{ row.item.title }}</td>
+          <td class="cell-category{% if row.can_edit %} editable{% endif %}" data-field="category" data-label="类别">{{ row.item.category.name }}</td>
+          <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="actual_amount" data-label="实付款">{{ row.item.actual_amount }}</td>
+          <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="invoice_amount" data-label="发票金额">{% if row.item.invoice_amount %}{{ row.item.invoice_amount }}{% endif %}</td>
+          <td class="cell-payer{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="payer" data-label="付款人">{{ row.item.payer_name }}</td>
+          <td class="cell-status{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="status" data-label="状态"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
+          <td class="attach-count" data-label="附件"
+              title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}{% if row.counts.support %} · 证明 {{ row.counts.support }}{% endif %}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}{% if row.counts.support %}/{{ row.counts.support }}{% endif %}</td>
+          <td class="cell-actions">{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
+        </tr>
+        {% empty %}
+        <tr class="empty-row"><td colspan="{% if user.is_staff %}10{% else %}9{% endif %}">当前筛选下没有条目</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endif %}
 
@@ -278,8 +356,15 @@
     }
   }
   function openPanel(url) {
-    fetch(url, {credentials: "same-origin"})
-      .then(function (resp) { return resp.ok ? resp.text() : Promise.reject(); })
+    fetch(url, {credentials: "same-origin", headers: {"X-Requested-With": "fetch"}})
+      .then(function (resp) {
+        if (resp.ok) return resp.text();
+        return resp.text().then(function (body) {
+          var message = "加载侧边栏失败";
+          try { message = JSON.parse(body).error || message; } catch (e) {}
+          throw new Error(message);
+        });
+      })
       .then(function (html) {
         PANEL.innerHTML = html;
         PANEL.hidden = false;
@@ -292,7 +377,9 @@
         PANEL.scrollTop = 0;
         initPanel();
       })
-      .catch(function () { toast("加载侧边栏失败"); });
+      .catch(function (err) {
+        toast(err && err.message ? err.message : "加载侧边栏失败");
+      });
   }
   MASK.addEventListener("click", closePanel);
   document.addEventListener("keydown", function (e) {
@@ -312,7 +399,9 @@
     touchStartY = null;
   }, {passive: true});
   var newBtn = document.getElementById("new-item-btn");
-  if (newBtn) newBtn.addEventListener("click", function () { openPanel("{% url 'item_create' %}"); });
+  if (newBtn) newBtn.addEventListener("click", function () {
+    openPanel("{% url 'item_create' %}?group=" + encodeURIComponent(newBtn.dataset.group || ""));
+  });
 
   /* ---------- 表格行交互：开侧边栏 / 删除 ---------- */
   if (tbody) tbody.addEventListener("click", function (e) {

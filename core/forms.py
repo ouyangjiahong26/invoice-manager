@@ -1,5 +1,5 @@
 from django import forms
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 
 from .attachments import category_help_text
 from .models import Attachment, Item
@@ -23,13 +23,21 @@ class ItemPanelForm(forms.ModelForm):
             "invoice_amount": "发票票面价税合计。多张发票会自动加总，也可手动修改",
         }
 
-    def __init__(self, *args, staff=False, **kwargs):
+    def __init__(self, *args, staff=False, groups=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["category"].help_text = category_help_text()
         self.fields["owner"] = forms.ModelChoiceField(
             queryset=User.objects.filter(is_active=True),
             label="付款人",
         )
+        if groups is not None:
+            self.fields["group"] = forms.ModelChoiceField(
+                queryset=Group.objects.filter(
+                    pk__in=[group.pk for group in groups]
+                ).order_by("id"),
+                label="组",
+                help_text="条目提交到该组的最新批次",
+            )
         if not staff:
             del self.fields["status"]
             del self.fields["owner"]
@@ -41,6 +49,10 @@ class ItemPanelForm(forms.ModelForm):
                 widget=forms.Textarea(attrs={"rows": 3}),
                 help_text="学生可见。改状态时必填，没改状态请留空",
             )
+        self.order_fields([
+            "group", "title", "category", "actual_amount", "invoice_amount",
+            "status", "owner", "review_comment",
+        ])
 
 
 class AttachmentForm(forms.ModelForm):

@@ -1,53 +1,99 @@
 {% extends "core/base.html" %}
 {% block title %}批量提交{% endblock %}
 
+{% block extra_css %}
+  /* 批量提交页：只补设计系统未覆盖的分区排布，颜色一律取设计令牌 */
+  .batch-section { margin-top: 22px; }
+  .batch-section > .card-title { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+
+  .batch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+  .batch-submit { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+  /* 提交前定位到缺信息的分组时高亮一下 */
+  .group-card.attention { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-border); }
+{% endblock %}
+
 {% block content %}
-<div class="batch-layout">
-<div class="card" style="max-width:900px">
-  <h1>批量提交报销条目</h1>
-  {% if vision_configured %}
-  <div class="ai-summary" id="batch-summary">尚未上传文件</div>
-  <form id="batch-csrf" hidden>{% csrf_token %}</form>
-  <div class="attach-block">
-    <label for="batch-upload" style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">混合上传票据文件（发票 / 支付记录 / 退款记录 / 证明材料）</label>
-    <input type="file" id="batch-upload" multiple accept=".jpg,.jpeg,.png,.pdf">
-    <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组。规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）。证明材料（充值/消费流水、回单等）不参与配对与金额合计，识别后在未配对区用“加入”挂到对应组。其余未配对文件不生成条目。</div>
+<div class="page-head">
+  <div>
+    <h1>批量提交报销条目</h1>
+    <p class="page-desc">选好一批票据，系统自动判定类型并配对成组，核对金额与类别后按组提交。</p>
   </div>
-
-  <div class="attach-grid" id="file-cards"></div>
-
-  <div class="errorlist" id="batch-error" hidden></div>
-
-  <div id="pair-entry" hidden>
-    <button type="button" id="pair-button">开始配对</button>
-  </div>
-
-  <div id="pair-result" hidden>
-    <h2>分组预览</h2>
-    <div class="helptext">{{ category_notes }}</div>
-    <div id="agent-entry" hidden>
-      <button type="button" id="agent-button">智能体补配</button>
-      <span class="helptext">对规则配不上的文件做多轮定向重读</span>
-    </div>
-    <div id="group-list"></div>
-
-    <h2>待确认组</h2>
-    <div id="pending-list"></div>
-
-    <h2>未配对</h2>
-    <div id="unmatched-list"></div>
-
-    <button type="button" id="submit-button" disabled>提交 0 条</button>
-  </div>
-  {% else %}
-  <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}">单条提交</a>。</div>
-  {% endif %}
 </div>
 
-<aside class="card ai-log-card">
-  <h2 style="font-size:15px;margin:0 0 8px">AI 处理流程</h2>
-  <ul class="ai-log" id="ai-log"><li class="ai-log-empty">等待上传文件…</li></ul>
-</aside>
+{% if not groups %}
+<div class="card empty-state">
+  {% if user.is_staff %}
+    <div class="empty-title">还没有组</div>
+    <p>先在后台创建组，再提交条目。</p>
+    <a class="btn" href="/admin/auth/group/add/">去后台建组</a>
+  {% else %}
+    <div class="empty-title">尚未分配组</div>
+    <p>你的账号尚未分配组，请联系管理员。</p>
+  {% endif %}
+</div>
+{% else %}
+<div class="batch-layout">
+  <div class="card">
+    {% if show_group_selector %}
+    <label for="batch-group" class="field-label">组</label>
+    <select id="batch-group">
+      {% for group in groups %}
+        <option value="{{ group.pk }}" {% if selected_group.pk == group.pk %}selected{% endif %}>{{ group.name }}</option>
+      {% endfor %}
+    </select>
+    <div class="helptext">提交到所选组的最新批次。</div>
+    {% endif %}
+    {% if vision_configured %}
+    <div class="ai-summary" id="batch-summary">尚未上传文件</div>
+    <form id="batch-csrf" hidden>{% csrf_token %}</form>
+
+    <section class="batch-section">
+      <div class="card-title"><h2>选择文件</h2></div>
+      <label for="batch-upload" class="field-label">混合上传票据文件（发票 / 支付记录 / 退款记录 / 证明材料）</label>
+      <input type="file" id="batch-upload" multiple accept=".jpg,.jpeg,.png,.pdf">
+      <div class="helptext">一次选择一批票据，系统自动判定每张类型并互相配对成组。规则配不上的会由配对智能体多轮重读再试。配不上支付记录的发票会生成单边发票组（实付款 0.00，可先提交，审核不通过后补传支付记录）。证明材料（充值/消费流水、回单等）不参与配对与金额合计，识别后在未配对区用“加入”挂到对应组。其余未配对文件不生成条目。</div>
+      <div class="attach-grid compact" id="file-cards"></div>
+      <div class="errorlist" id="batch-error" hidden></div>
+      <div class="batch-actions" id="pair-entry" hidden>
+        <button type="button" id="pair-button">开始配对</button>
+      </div>
+    </section>
+
+    <div id="pair-result" hidden>
+      <section class="batch-section">
+        <div class="card-title"><h2>分组预览</h2></div>
+        <div class="helptext">{{ category_notes }}</div>
+        <div class="batch-actions" id="agent-entry" hidden>
+          <button type="button" id="agent-button">智能体补配</button>
+          <span class="helptext">对规则配不上的文件做多轮定向重读</span>
+        </div>
+        <div id="group-list"></div>
+      </section>
+
+      <section class="batch-section">
+        <div class="card-title"><h2>待确认组</h2></div>
+        <div id="pending-list"></div>
+      </section>
+
+      <section class="batch-section">
+        <div class="card-title"><h2>未配对</h2></div>
+        <div id="unmatched-list"></div>
+      </section>
+
+      <div class="batch-submit">
+        <button type="button" id="submit-button" disabled>提交 0 条</button>
+      </div>
+    </div>
+    {% else %}
+    <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}?group={{ selected_group.pk }}">单条提交</a>。</div>
+    {% endif %}
+  </div>
+
+  <aside class="card ai-log-card">
+    <div class="card-title"><h2>AI 处理流程</h2></div>
+    <ul class="ai-log" id="ai-log"><li class="ai-log-empty">等待上传文件…</li></ul>
+  </aside>
 </div>
 
 {{ categories|json_script:"categories-data" }}
@@ -55,63 +101,29 @@
 <template id="file-card-template">
   <div class="attach-card">
     <div class="attach-preview"></div>
-    <div class="attach-name"></div>
-    <div class="attach-status"></div>
-    <label class="attach-field">类型
-      <select data-role="kind">
-        <option value="unknown">未识别</option>
-        <option value="invoice">发票</option>
-        <option value="payment">支付记录</option>
-        <option value="refund">退款记录</option>
-        <option value="support">证明材料</option>
-      </select>
-    </label>
-    <label class="attach-field amount-label">金额（元）
-      <input type="number" step="0.01" data-role="amount">
-    </label>
-    <div class="attach-fields"></div>
-    <div class="attach-summary"></div>
-    <div class="attach-actions">
-      <button type="button" class="small secondary" data-action="ignore">忽略</button>
+    <div class="attach-body">
+      <div class="attach-name"></div>
+      <div class="attach-status"></div>
+      <label class="attach-field">类型
+        <select data-role="kind">
+          <option value="unknown">未识别</option>
+          <option value="invoice">发票</option>
+          <option value="payment">支付记录</option>
+          <option value="refund">退款记录</option>
+          <option value="support">证明材料</option>
+        </select>
+      </label>
+      <label class="attach-field amount-label">金额（元）
+        <input type="number" step="0.01" data-role="amount">
+      </label>
+      <div class="attach-fields"></div>
+      <div class="attach-summary helptext"></div>
+      <div class="attach-actions">
+        <button type="button" class="small secondary" data-action="ignore">忽略</button>
+      </div>
     </div>
   </div>
 </template>
-
-<style>
-  .attach-field select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
-  .chip { display: flex; align-items: center; gap: 8px; border: 1px solid #d0d7de; border-radius: 6px; padding: 4px 8px; margin-top: 6px; font-size: 13px; background: #f6f8fa; }
-  .chip img, .unmatched-row img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
-  .chip-pdf { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; background: #d0d7de; border-radius: 4px; font-size: 11px; color: #1f2328; flex: none; }
-  .chip .chip-name { flex: 1; word-break: break-all; }
-  .group-card { border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; margin-top: 12px; }
-  .group-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr)); gap: 8px; margin-top: 8px; }
-  .group-fields label { display: block; font-size: 12px; color: #57606a; }
-  .group-fields input, .group-fields select { width: 100%; padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; margin-top: 2px; }
-  .group-card .reconcile { font-size: 13px; }
-  .group-card .reconcile.ok { color: #116329; }
-  .group-card .reconcile.warn { color: #7d4e00; }
-  .unmatched-row { display: flex; align-items: center; gap: 8px; border: 1px solid #ff818266; background: #ffebe9; border-radius: 6px; padding: 6px 10px; margin-top: 6px; font-size: 13px; flex-wrap: wrap; }
-  .unmatched-row .reason { flex: 1; word-break: break-all; }
-  .unmatched-row select { padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 12px; }
-  .pending-row { margin-top: 8px; }
-  .pending-row select { padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 12px; }
-  .batch-layout { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
-  .batch-layout > .card { flex: 1 1 640px; }
-  .batch-layout > .ai-log-card { flex: 0 1 300px; position: sticky; top: 12px; max-height: 80vh; overflow: auto; }
-  .ai-log { list-style: none; margin: 0; padding: 0; font-size: 12px; color: #57606a; }
-  .ai-log li { padding: 4px 0; border-bottom: 1px dashed #eaeef2; word-break: break-all; }
-  .ai-log li.ai-log-head { color: #1f2328; font-weight: 600; }
-  .ai-log li.ai-log-empty { color: #8c959f; }
-  .chip { cursor: zoom-in; }
-  .chip img { width: 56px; height: 56px; }
-  .chip .chip-pdf { cursor: zoom-in; width: 56px; height: 56px; font-size: 13px; }
-  /* 窄屏（手机）：日志侧栏折行后不再顶跳，表单字号防 iOS 聚焦放大 */
-  @media (max-width: 720px) {
-    .batch-layout > .ai-log-card { position: static; max-height: 40vh; overflow: auto; flex-basis: 100%; }
-    .attach-field select, .group-fields input, .group-fields select,
-    .unmatched-row select, .pending-row select { font-size: 16px; }
-  }
-</style>
 
 <script>
 (function () {
@@ -152,6 +164,11 @@
   var agentRoundUrl = "{% url 'batch_agent_round' %}";
   var submitUrl = "{% url 'batch_submit' %}";
   var boardUrl = "{% url 'board' %}";
+  var GROUP_ID = "{{ selected_group.pk|default:'' }}";
+  function selectedGroupId() {
+    var select = document.getElementById("batch-group");
+    return select ? select.value : GROUP_ID;
+  }
   var categories = JSON.parse(document.getElementById("categories-data").textContent);
   var MAX_FILES = {{ max_files }};
 
@@ -795,8 +812,7 @@
     box.appendChild(hint);
     active.forEach(function (members, i) {
       var el = document.createElement("div");
-      el.className = "group-card";
-      el.style.borderColor = "#d4a72c";
+      el.className = "group-card pending";
       var head = document.createElement("div");
       var headText = document.createElement("b");
       headText.textContent = "待确认组 " + (i + 1);
@@ -1014,8 +1030,8 @@
       var card = document.querySelectorAll("#group-list .group-card")[first];
       if (card) {
         card.scrollIntoView({behavior: "smooth", block: "center"});
-        card.style.boxShadow = "0 0 0 3px #ff8182";
-        setTimeout(function () { card.style.boxShadow = ""; }, 1600);
+        card.classList.add("attention");
+        setTimeout(function () { card.classList.remove("attention"); }, 1600);
       }
       return;
     }
@@ -1046,7 +1062,7 @@
       credentials: "same-origin",
       redirect: "manual",
       headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
-      body: JSON.stringify({session_id: sessionId, groups: planGroups})
+      body: JSON.stringify({session_id: sessionId, groups: planGroups, group: selectedGroupId()})
     })
       .then(function (resp) {
         // 成功后 302 跳到看板：manual 不跟随跳转，保住 messages 只在落地页渲染一次
@@ -1065,4 +1081,5 @@
   refreshSummary();
 })();
 </script>
+{% endif %}
 {% endblock %}
