@@ -21,7 +21,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from . import pairing, staging, stamping, vision
-from .access import accessible_groups, can_access_group, can_edit_item, can_view_item
+from .access import (accessible_groups, can_access_group, can_create_batch, can_edit_item,
+                     can_review_batch, can_review_item, can_view_item, group_is_self_service)
 from .attachments import (KIND_LABELS, attachment_groups, build_attachment, category_help_text,
                          decimal_or_none, ocr_value, plan_decimal)
 from .audit import attachment_entries, attachment_entry, mark_attachments, mark_comment
@@ -79,6 +80,19 @@ def _latest_batch(group):
     return group.batches.first()  # Batch 默认按创建时间倒序
 
 
+def _submission_batch(user, group):
+    """条目提交目标批次：自助组成员进自己最新创建的批次，其余进组最新批次。"""
+    if not user.is_staff and group_is_self_service(group):
+        return Batch.objects.filter(group=group, created_by=user).first()
+    return _latest_batch(group)
+
+
+def _submission_batch_error(user, group):
+    if not user.is_staff and group_is_self_service(group):
+        return f"请先在组 {group.name} 创建自己的批次"
+    return f"组 {group.name} 还没有批次，请先创建批次"
+
+
 def _json_payload(request):
     """请求体解析为 dict。非法 JSON 抛 ValueError，非 dict 归一为 {}（缺字段由各接口判 400）。"""
     try:
@@ -133,8 +147,9 @@ def board(request):
     """表格主视图：按批次展示本组条目，序号=该批 approved 条目的导出序号。筛选、行内编辑、拖拽调序由前端承载。"""
     groups = list(accessible_groups(request.user))
     group_ids = {group.pk for group in groups}
+    creatable_groups = [group for group in groups if can_create_batch(request.user, group)]
     batches = list(
-        Batch.objects.filter(group__in=groups).select_related("group")
+        Batch.objects.filter(group__in=groups).select_related("group", "created_by")
     )
     current = None
     batch_id = request.GET.get("batch", "")
@@ -142,6 +157,9 @@ def board(request):
         current = next((batch for batch in batches if batch.pk == int(batch_id)), None)
     if current is None and batches:
         current = batches[0]
+    can_review_current = current is not None and can_review_batch(request.user, current)
+    submit_batch = _submission_batch(request.user, current.group) if current else None
+    can_submit_current = submit_batch is not None and not submit_batch.archived
 
     rows, payers, seen_payers = [], [], set()
     # 本批汇总，供表格上方的统计卡展示；先于筛选统计，筛选只影响下方表格
@@ -177,6 +195,7 @@ def board(request):
                 "seq": row_seq,
                 "item": item,
                 "can_edit": can_edit_item(request.user, item, group_ids) and not current.archived,
+                "can_review": can_review_current and not current.archived,
                 "counts": counts,
             })
             summary["total"] += 1
@@ -207,6 +226,9 @@ def board(request):
         "batches": batches,
         "batch_groups": batch_groups,
         "groups": groups,
+        "creatable_groups": creatable_groups,
+        "can_review_current": can_review_current,
+        "can_submit_current": can_submit_current,
         "current_batch": current,
         "categories": Category.objects.all(),
         "payers": payers,
@@ -229,11 +251,11 @@ def item_create(request):
         return _panel_error(request, message)
     group = _group_from_request(request, groups)
     show_group = len(groups) > 1
-    batch = _latest_batch(group)
+    batch = _submission_batch(request.user, group)
     if batch is None:
-        return _panel_error(request, f"组 {group.name} 还没有批次，请先创建批次")
+        return _panel_error(request, _submission_batch_error(request.user, group))
     if batch.archived:
-        return _panel_error(request, "该组最新批次已存档，请新建批次后再提交")
+        return _panel_error(request, "该批次已存档，请新建批次后再提交")
 
     if request.method == "POST":
         form = ItemPanelForm(
@@ -341,16 +363,18 @@ def item_update(request, pk):
 def item_panel(request, pk):
     """条目侧边栏片段：登录即可看（含附件与留痕），编辑控件限本人/staff。"""
     item = get_object_or_404(
-        Item.objects.select_related("owner", "category", "batch"), pk=pk
+        Item.objects.select_related("owner", "category", "batch__group"), pk=pk
     )
     if not can_view_item(request.user, item):
         raise PermissionDenied("无权查看该条目")
     can_edit = can_edit_item(request.user, item) and not item.batch.archived
+    can_review = can_review_item(request.user, item) and not item.batch.archived
     logs = list(item.audit_logs.all())
     context = {
         "item": item,
         "is_create": False,
         "can_edit": can_edit,
+        "can_review": can_review,
         "is_staff": request.user.is_staff,
         "audit_logs": logs,
         "latest_review": _latest_review(logs),
@@ -364,11 +388,30 @@ def item_panel(request, pk):
 
 @login_required
 @require_POST
+def item_review(request, pk):
+    """批次创建者或管理员审核条目状态，批语必填。"""
+    item = get_object_or_404(Item.objects.select_related("batch__group"), pk=pk)
+    if not can_review_item(request.user, item):
+        return JsonResponse({"error": "无权审核该条目"}, status=403)
+    if item.batch.archived:
+        return JsonResponse({"error": "已存档批次不可审核"}, status=403)
+    status = request.POST.get("status")
+    if status not in STATUS_FILTERS:
+        return JsonResponse({"error": "状态无效"}, status=400)
+    comment, error = _review_comment(request.POST.get("comment"), status != item.status)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+    item.status = status
+    mark_comment(item, comment)
+    item.save()
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
 def item_field_update(request, pk):
-    """表格行内单字段保存。状态/付款人仅 staff。"""
-    item = get_object_or_404(Item, pk=pk)
-    _owned_item(request, item)
-    _reject_archived(item)
+    """表格行内单字段保存。条目字段限本人/管理员，审核状态限批次创建者/管理员。"""
+    item = get_object_or_404(Item.objects.select_related("batch__group"), pk=pk)
     try:
         payload = _json_payload(request)
     except ValueError as exc:
@@ -377,10 +420,18 @@ def item_field_update(request, pk):
     value = payload.get("value")
 
     student_fields = {"title", "category", "actual_amount", "invoice_amount"}
-    staff_fields = {"status", "owner"}
-    if field in staff_fields and not request.user.is_staff:
-        raise PermissionDenied("只有管理员可以修改审核状态或付款人")
-    if field not in student_fields | staff_fields:
+    if field in student_fields:
+        _owned_item(request, item)
+        _reject_archived(item)
+    elif field == "status":
+        if not can_review_item(request.user, item):
+            raise PermissionDenied("只有批次创建者或管理员可以审核")
+        _reject_archived(item)
+    elif field == "owner":
+        if not request.user.is_staff:
+            raise PermissionDenied("只有管理员可以修改付款人")
+        _reject_archived(item)
+    else:
         return JsonResponse({"error": "不允许修改的字段"}, status=400)
 
     try:
@@ -479,22 +530,22 @@ def item_delete(request, pk):
 @login_required
 @require_POST
 def batch_add(request):
-    if not request.user.is_staff:
-        raise PermissionDenied("只有管理员可以创建批次")
     name = (request.POST.get("name") or "").strip()[:100]
     group = Group.objects.filter(pk=_pk_value(request.POST.get("group"))).first()
     if group is None:
         messages.error(request, "请选择组")
         return redirect("board")
+    if not can_create_batch(request.user, group):
+        raise PermissionDenied("无权在该组创建批次")
     if not name:
         messages.error(request, "批次名称不能为空")
         return redirect("board")
     if Batch.objects.filter(group=group, name=name).exists():
         messages.error(request, f"组 {group.name} 下批次 {name} 已存在")
         return redirect("board")
-    Batch.objects.create(name=name, group=group)
+    batch = Batch.objects.create(name=name, group=group, created_by=request.user)
     messages.success(request, f"已为组 {group.name} 创建批次 {name}")
-    return redirect("board")
+    return redirect(f"{reverse('board')}?batch={batch.pk}")
 
 
 @login_required
@@ -586,6 +637,10 @@ def batch_create(request):
         "vision_configured": vision.configured(),
         "groups": groups,
         "selected_group": selected,
+        "target_batch": _submission_batch(request.user, selected) if selected else None,
+        "self_service_selected": bool(
+            selected and not request.user.is_staff and group_is_self_service(selected)
+        ),
         "show_group_selector": len(groups) > 1,
         "categories": category_payloads(),
         "category_notes": category_help_text(),
@@ -921,11 +976,11 @@ def batch_submit(request):
         target_group = Group.objects.filter(pk=_pk_value(raw_group)).first()
         if target_group is None or not can_access_group(request.user, target_group):
             return JsonResponse({"error": "无权提交到该组"}, status=403)
-    batch = _latest_batch(target_group)
+    batch = _submission_batch(request.user, target_group)
     if batch is None:
-        return JsonResponse({"error": f"组 {target_group.name} 还没有批次，请先创建批次"}, status=400)
+        return JsonResponse({"error": _submission_batch_error(request.user, target_group)}, status=400)
     if batch.archived:
-        return JsonResponse({"error": "该组最新批次已存档，请新建批次后再提交"}, status=400)
+        return JsonResponse({"error": "该批次已存档，请新建批次后再提交"}, status=400)
 
     prepared, opened = [], []
     for number, group in enumerate(raw_groups, start=1):

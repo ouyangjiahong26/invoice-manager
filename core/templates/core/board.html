@@ -25,7 +25,7 @@
           <button type="submit" class="btn secondary">{% if current_batch.archived %}取消存档{% else %}存档{% endif %}</button>
         </form>
       {% endif %}
-      {% if not current_batch.archived %}
+      {% if not current_batch.archived and can_submit_current %}
       <button type="button" id="new-item-btn" data-group="{{ current_batch.group_id }}">新建条目</button>
       {% endif %}
     </div>
@@ -40,14 +40,14 @@
   </div>
 {% elif not batches %}
   <div class="card empty-state">
-    {% if user.is_staff %}
+    {% if creatable_groups %}
       <div class="empty-title">还没有报销批次</div>
-      <p>选择组并创建第一个批次，学生提交的条目会自动归入本组最新批次。</p>
+      <p>{% if user.is_staff %}选择组并创建第一个批次，学生提交的条目会自动归入本组最新批次。{% else %}先创建自己的批次，再提交条目。{% endif %}</p>
       <form method="post" action="{% url 'batch_add' %}" class="stack">
         {% csrf_token %}
         <label for="new-batch-group">组</label>
         <select id="new-batch-group" name="group" required>
-          {% for group in groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
+          {% for group in creatable_groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
         </select>
         <label for="new-batch-name">批次名称</label>
         <input type="text" id="new-batch-name" name="name" maxlength="100" required
@@ -94,7 +94,7 @@
         {% for group, group_batches in batch_groups %}
           <optgroup label="{{ group.name }}">
             {% for b in group_batches %}
-              <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.archived %}（已存档）{% endif %}</option>
+              <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.created_by %} · {{ b.created_by.get_full_name|default:b.created_by.username }}{% endif %}{% if b.archived %}（已存档）{% endif %}</option>
             {% endfor %}
           </optgroup>
         {% endfor %}
@@ -120,13 +120,13 @@
       <input type="search" id="search-input" placeholder="搜索明细" value="{{ q }}">
     </form>
     <span class="spacer"></span>
-    {% if user.is_staff %}
+    {% if creatable_groups %}
       <details class="new-batch">
         <summary>＋ 新建批次</summary>
         <form method="post" action="{% url 'batch_add' %}">
           {% csrf_token %}
           <select name="group" required aria-label="组">
-            {% for group in groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
+            {% for group in creatable_groups %}<option value="{{ group.pk }}">{{ group.name }}</option>{% endfor %}
           </select>
           <input type="text" name="name" maxlength="100" required placeholder="批次名称">
           <button type="submit" class="secondary small">创建</button>
@@ -143,8 +143,8 @@
     </div>
     <span class="spacer"></span>
     <span class="helptext">
-      {% if user.is_staff and not current_batch.archived %}
-        点击行编辑，拖动行首在类别内调序，点状态改审核结果
+      {% if can_review_current and not current_batch.archived %}
+        {% if user.is_staff %}点击行编辑，拖动行首在类别内调序，点状态改审核结果{% else %}点击行查看详情，点状态改审核结果{% endif %}
       {% else %}
         点击行查看详情与附件
       {% endif %}
@@ -178,7 +178,7 @@
           <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="actual_amount" data-label="实付款">{{ row.item.actual_amount }}</td>
           <td class="num cell-amount{% if row.can_edit %} editable{% endif %}" data-field="invoice_amount" data-label="发票金额">{% if row.item.invoice_amount %}{{ row.item.invoice_amount }}{% endif %}</td>
           <td class="cell-payer{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="payer" data-label="付款人">{{ row.item.payer_name }}</td>
-          <td class="cell-status{% if user.is_staff and not current_batch.archived %} editable{% endif %}" data-field="status" data-label="状态"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
+          <td class="cell-status{% if row.can_review %} editable{% endif %}" data-field="status" data-label="状态"><span class="badge {{ row.item.status }}">{{ row.item.get_status_display }}</span></td>
           <td class="attach-count" data-label="附件"
               title="发票 {{ row.counts.invoice }} · 支付 {{ row.counts.payment }} · 退款 {{ row.counts.refund }}{% if row.counts.support %} · 证明 {{ row.counts.support }}{% endif %}">{{ row.counts.invoice }}/{{ row.counts.payment }}{% if row.counts.refund %}/{{ row.counts.refund }}{% endif %}{% if row.counts.support %}/{{ row.counts.support }}{% endif %}</td>
           <td class="cell-actions">{% if row.can_edit %}<button type="button" class="danger small row-del">删</button>{% endif %}</td>
@@ -749,9 +749,11 @@
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         if (form.classList.contains("attach-delete-form") && !confirm("删除这个附件？")) return;
+        var formData = new FormData(form);
+        if (e.submitter && e.submitter.name) formData.append(e.submitter.name, e.submitter.value);
         fetch(form.getAttribute("action"), {
           method: "POST",
-          body: new FormData(form),
+          body: formData,
           credentials: "same-origin",
           headers: {"X-Requested-With": "fetch"}
         })

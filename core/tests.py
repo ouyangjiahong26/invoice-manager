@@ -28,7 +28,7 @@ import pymupdf
 
 from . import pairing, staging, stamping, vision
 from .audit import ActorMiddleware
-from .models import Attachment, AuditLog, Batch, Category, Item
+from .models import Attachment, AuditLog, Batch, Category, GroupSettings, Item
 from .validation import check_item
 
 PNG_1X1 = base64.b64decode(
@@ -2215,8 +2215,9 @@ class BatchAddTests(SubmissionTestCase):
     def test_staff_creates_batch(self):
         self.client.force_login(self.staff)
         response = self.client.post("/batches/add/", {"name": "20261008 报销", "group": self.group.pk})
-        self.assertRedirects(response, "/")
-        self.assertTrue(Batch.objects.filter(name="20261008 报销").exists())
+        batch = Batch.objects.get(name="20261008 报销")
+        self.assertRedirects(response, f"/?batch={batch.pk}")
+        self.assertEqual(batch.created_by, self.staff)
 
     def test_student_forbidden(self):
         self.client.force_login(self.student)
@@ -2240,9 +2241,227 @@ class BatchAddTests(SubmissionTestCase):
         self.client.force_login(self.staff)
         response = self.client.post(
             "/batches/add/", {"name": self.batch.name, "group": other_group.pk})
+        batch = Batch.objects.get(group=other_group, name=self.batch.name)
+        self.assertRedirects(response, f"/?batch={batch.pk}")
+
+
+class SelfServiceBatchTests(SubmissionTestCase):
+    """课题组成员自助：自己建批、条目进自己批次、自己批次内可审核。"""
+
+    def setUp(self):
+        super().setUp()
+        self.self_group = Group.objects.create(name="课题组")
+        GroupSettings.objects.create(group=self.self_group, self_service=True)
+        self.member = User.objects.create_user("member", password="pw", first_name="成员甲")
+        self.member_b = User.objects.create_user("memberb", password="pw", first_name="成员乙")
+        self.outsider = User.objects.create_user("outsider", password="pw", first_name="外组")
+        self.self_group.user_set.add(self.member, self.member_b)
+
+    def _create_batch(self, user, name):
+        self.client.force_login(user)
+        response = self.client.post(
+            "/batches/add/", {"name": name, "group": self.self_group.pk})
+        batch = Batch.objects.get(group=self.self_group, name=name)
+        self.assertRedirects(response, f"/?batch={batch.pk}")
+        return batch
+
+    def _review_setup(self):
+        batch = self._create_batch(self.member, "审核批次")
+        item = Item.objects.create(
+            owner=self.member_b, title="他人条目", category=self.category,
+            batch=batch, actual_amount="10.00", position=1,
+        )
+        return batch, item
+
+    def test_member_creates_own_batch(self):
+        batch = self._create_batch(self.member, "成员批次")
+        self.assertEqual(batch.created_by, self.member)
+
+    def test_member_cannot_create_batch_in_non_self_service_group(self):
+        self.client.force_login(self.member)
+        response = self.client.post(
+            "/batches/add/", {"name": "越权批次", "group": self.group.pk})
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Batch.objects.filter(name="越权批次").exists())
+
+    def test_non_member_cannot_create_batch(self):
+        self.client.force_login(self.outsider)
+        response = self.client.post(
+            "/batches/add/", {"name": "外组批次", "group": self.self_group.pk})
+        self.assertEqual(response.status_code, 403)
+
+    def test_board_shows_create_batch_for_member(self):
+        self.client.force_login(self.member)
+        self.assertContains(self.client.get("/"), "创建批次")
+        self._create_batch(self.member, "成员批次")
+        self.assertContains(self.client.get("/"), "新建批次")
+
+    def test_item_goes_to_own_batch(self):
+        own = self._create_batch(self.member, "我的批次")
+        self._create_batch(self.member_b, "别人的新批次")
+        self.client.force_login(self.member)
+        response = self.client.post(
+            "/items/new/", _item_data(category=self.category.pk))
         self.assertRedirects(response, "/")
-        self.assertTrue(
-            Batch.objects.filter(group=other_group, name=self.batch.name).exists())
+        self.assertEqual(Item.objects.latest("id").batch, own)
+
+    def test_item_without_own_batch_rejected(self):
+        self._create_batch(self.member_b, "别人的批次")
+        self.client.force_login(self.member)
+        response = self.client.post(
+            "/items/new/", _item_data(category=self.category.pk))
+        self.assertRedirects(response, "/")
+        self.assertFalse(Item.objects.exists())
+        response = self.client.get(
+            "/items/new/", HTTP_X_REQUESTED_WITH="fetch")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("创建自己的批次", response.json()["error"])
+
+    def test_batch_page_shows_own_target(self):
+        own = self._create_batch(self.member, "我的批次")
+        self.client.force_login(self.member)
+        response = self.client.get("/items/batch/")
+        self.assertContains(response, f"提交到批次：{own.name}")
+
+    def test_batch_page_warns_without_own_batch(self):
+        self._create_batch(self.member_b, "别人的批次")
+        self.client.force_login(self.member)
+        self.assertContains(self.client.get("/items/batch/"), "你还没有自己的批次")
+
+    def test_batch_submit_uses_own_batch(self):
+        own = self._create_batch(self.member, "我的批次")
+        self.client.force_login(self.member)
+        stage = self.client.post(
+            "/items/batch/stage/",
+            {"files": [_png_upload("invoice.png"), _png_upload("payment.png")]})
+        payload = stage.json()
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({
+                "session_id": payload["session_id"],
+                "group": self.self_group.pk,
+                "groups": [{
+                    "title": "打印费", "category": self.category.pk,
+                    "actual_amount": "5.00", "invoice_amount": "5.00",
+                    "files": [
+                        {"file_id": payload["files"][0]["id"],
+                         "kind": "invoice", "amount": "5.00"},
+                        {"file_id": payload["files"][1]["id"],
+                         "kind": "payment", "amount": "5.00"},
+                    ],
+                }],
+            }),
+            content_type="application/json",
+        )
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, own)
+
+    def test_batch_submit_without_own_batch_rejected(self):
+        self._create_batch(self.member_b, "别人的批次")
+        self.client.force_login(self.member)
+        stage = self.client.post(
+            "/items/batch/stage/", {"files": [_png_upload("invoice.png")]})
+        payload = stage.json()
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({
+                "session_id": payload["session_id"],
+                "group": self.self_group.pk,
+                "groups": [{
+                    "title": "打印费", "category": self.category.pk,
+                    "actual_amount": "5.00", "invoice_amount": "5.00",
+                    "files": [{"file_id": payload["files"][0]["id"],
+                               "kind": "invoice", "amount": "5.00"}],
+                }],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("创建自己的批次", response.json()["error"])
+
+    def test_creator_reviews_other_member_item(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "status", "value": "approved", "comment": "通过"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_APPROVED)
+        log = AuditLog.objects.filter(action="update", item_pk=item.pk).first()
+        self.assertEqual(log.comment, "通过")
+
+    def test_review_requires_comment(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "status", "value": "approved"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("请填写审核批语", response.json()["error"])
+
+    def test_non_creator_member_cannot_review(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member_b)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "status", "value": "approved", "comment": "通过"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_creator_cannot_edit_other_member_fields(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member)
+        response = self.client.post(
+            f"/items/{item.pk}/field/",
+            json.dumps({"field": "title", "value": "改标题"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_creator_cannot_delete_other_member_item(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member)
+        self.assertEqual(self.client.post(f"/items/{item.pk}/delete/").status_code, 403)
+        self.assertTrue(Item.objects.filter(pk=item.pk).exists())
+
+    def test_panel_shows_review_form_for_creator(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member)
+        response = self.client.get(f"/items/{item.pk}/panel/")
+        self.assertContains(response, f"/items/{item.pk}/review/")
+        self.assertNotContains(response, 'id="panel-form"')
+
+    def test_panel_review_form_updates_status(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member)
+        response = self.client.post(
+            f"/items/{item.pk}/review/", {"status": "approved", "comment": "通过"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        item.refresh_from_db()
+        self.assertEqual(item.status, Item.STATUS_APPROVED)
+
+    def test_panel_review_form_requires_permission(self):
+        _, item = self._review_setup()
+        self.client.force_login(self.member_b)
+        response = self.client.post(
+            f"/items/{item.pk}/review/", {"status": "approved", "comment": "通过"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_board_status_editable_for_creator_only(self):
+        batch, _ = self._review_setup()
+        self.client.force_login(self.member)
+        response = self.client.get("/", {"batch": batch.pk})
+        self.assertContains(response, "cell-status editable")
+        self.client.force_login(self.member_b)
+        response = self.client.get("/", {"batch": batch.pk})
+        self.assertNotContains(response, "cell-status editable")
 
 
 class AdminPagesTests(TestCase):
@@ -2279,6 +2498,15 @@ class AdminPagesTests(TestCase):
         group.user_set.add(inactive)
         response = self.client.get(f"/admin/auth/group/{group.pk}/change/")
         self.assertContains(response, f'value="{inactive.pk}" selected')
+
+    def test_group_admin_sets_self_service(self):
+        group = Group.objects.create(name="课题组")
+        response = self.client.post(
+            f"/admin/auth/group/{group.pk}/change/",
+            {"name": "课题组", "members": [], "self_service": "on"},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(GroupSettings.objects.get(group=group).self_service)
 
 
 class BatchArchiveTests(SubmissionTestCase):
