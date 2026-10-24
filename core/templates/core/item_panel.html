@@ -26,6 +26,21 @@
 </div>
 {% endif %}
 
+{% if can_review and not user.is_staff %}
+<div class="panel-section">
+  <h3>审核</h3>
+  <form class="stack" id="panel-review-form" method="post" action="{% url 'item_review' item.pk %}">
+    {% csrf_token %}
+    <label for="panel-review-comment">审核批语</label>
+    <textarea id="panel-review-comment" name="comment" rows="3" maxlength="200" required placeholder="通过或退回原因，学生可见"></textarea>
+    <div class="panel-actions">
+      {% if item.status != "approved" %}<button type="submit" name="status" value="approved">通过</button>{% endif %}
+      {% if item.status != "rejected" %}<button type="submit" name="status" value="rejected">退回</button>{% endif %}
+    </div>
+  </form>
+</div>
+{% endif %}
+
 {% if form %}
 <div class="ai-summary" id="panel-ai-summary">尚未上传附件</div>
 <form class="stack" id="panel-form" method="post" enctype="multipart/form-data" action="{% if is_create %}{% url 'item_create' %}{% else %}{% url 'item_update' item.pk %}{% endif %}">
