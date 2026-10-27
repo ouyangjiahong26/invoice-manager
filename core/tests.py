@@ -76,7 +76,7 @@ class SubmissionTestCase(TestCase):
         self.category, _ = Category.objects.get_or_create(
             name="信息服务费", defaults={"order": 0}
         )
-        self.group, _ = Group.objects.get_or_create(name="实验班")
+        self.group, _ = Group.objects.get_or_create(name="甲组")
         self.batch = Batch.objects.create(name="2025 报销批次", group=self.group)
         self.student = User.objects.create_user(
             "zhangsan22", password="pw", first_name="张三"
@@ -1630,12 +1630,12 @@ class GroupIsolationTests(SubmissionTestCase):
 
     def setUp(self):
         super().setUp()
-        self.other_group = Group.objects.create(name="课题组")
+        self.other_group = Group.objects.create(name="乙组")
         self.other_user = User.objects.create_user(
             "wangwu23", password="pw", first_name="王五"
         )
         self.other_group.user_set.add(self.other_user)
-        self.other_batch = Batch.objects.create(name="课题组批次", group=self.other_group)
+        self.other_batch = Batch.objects.create(name="乙组批次", group=self.other_group)
         self.other_item = Item.objects.create(
             owner=self.other_user, title="他组条目", category=self.category,
             batch=self.other_batch, actual_amount="9.00", position=1,
@@ -1653,7 +1653,7 @@ class GroupIsolationTests(SubmissionTestCase):
         response = self.client.get("/", {"batch": self.other_batch.pk})
         self.assertContains(response, "他组条目")
         self.assertContains(response, self.other_batch.name)
-        self.assertContains(response, self.batch.name)  # 批次下拉仍列出实验班批次
+        self.assertContains(response, self.batch.name)  # 批次下拉仍列出甲组批次
 
     def test_multi_group_user_sees_both(self):
         self.student.groups.add(self.other_group)
@@ -1661,7 +1661,7 @@ class GroupIsolationTests(SubmissionTestCase):
         response = self.client.get("/")
         self.assertContains(response, self.other_batch.name)
         self.assertContains(response, self.batch.name)
-        self.assertContains(response, "他组条目")  # 默认取最新批次（课题组批）
+        self.assertContains(response, "他组条目")  # 默认取最新批次（乙组批）
 
     def test_batch_page_group_selector_only_for_multi_group(self):
         self.client.force_login(self.student)
@@ -2085,7 +2085,7 @@ class ExportBatchTests(SubmissionTestCase):
         ))
         self.client.force_login(self.staff)
         response = self.client.get("/export/excel/", {"batch": self.batch.pk})
-        self.assertIn("报销汇总_实验班_2025 报销批次.xlsx", _content_disposition(response))
+        self.assertIn("报销汇总_甲组_2025 报销批次.xlsx", _content_disposition(response))
         sheet = load_workbook(BytesIO(response.content)).active
         titles = [sheet.cell(row=r, column=2).value for r in range(2, sheet.max_row + 1)]
         self.assertIn("硬盘", titles)
@@ -2106,7 +2106,7 @@ class ExportBatchTests(SubmissionTestCase):
                             status=Item.STATUS_APPROVED)
         self.client.force_login(self.staff)
         response = self.client.get("/export/zip/", {"batch": self.batch.pk})
-        self.assertIn("报销材料_实验班_2025 报销批次.zip", _content_disposition(response))
+        self.assertIn("报销材料_甲组_2025 报销批次.zip", _content_disposition(response))
 
     def test_excel_seq_follows_position(self):
         Item.objects.create(owner=self.student, title="后提交排前", category=self.category,
@@ -2237,7 +2237,7 @@ class BatchAddTests(SubmissionTestCase):
         self.assertFalse(Batch.objects.filter(name="无组批次").exists())
 
     def test_same_name_allowed_in_other_group(self):
-        other_group = Group.objects.create(name="课题组")
+        other_group = Group.objects.create(name="乙组")
         self.client.force_login(self.staff)
         response = self.client.post(
             "/batches/add/", {"name": self.batch.name, "group": other_group.pk})
@@ -2246,11 +2246,11 @@ class BatchAddTests(SubmissionTestCase):
 
 
 class SelfServiceBatchTests(SubmissionTestCase):
-    """课题组成员自助：自己建批、条目进自己批次、自己批次内可审核。"""
+    """乙组成员自助：自己建批、条目进自己批次、自己批次内可审核。"""
 
     def setUp(self):
         super().setUp()
-        self.self_group = Group.objects.create(name="课题组")
+        self.self_group = Group.objects.create(name="乙组")
         GroupSettings.objects.create(group=self.self_group, self_service=True)
         self.member = User.objects.create_user("member", password="pw", first_name="成员甲")
         self.member_b = User.objects.create_user("memberb", password="pw", first_name="成员乙")
@@ -2502,7 +2502,7 @@ class AdminPagesTests(TestCase):
         self.client.force_login(self.root)
 
     def test_admin_pages_render(self):
-        group = Group.objects.create(name="课题组")
+        group = Group.objects.create(name="乙组")
         for url in (
             "/admin/auth/group/add/",
             f"/admin/auth/group/{group.pk}/change/",
@@ -2514,26 +2514,26 @@ class AdminPagesTests(TestCase):
                 self.assertEqual(self.client.get(url).status_code, 200)
 
     def test_group_admin_updates_members(self):
-        group = Group.objects.create(name="课题组")
+        group = Group.objects.create(name="乙组")
         response = self.client.post(
             f"/admin/auth/group/{group.pk}/change/",
-            {"name": "课题组", "members": [self.root.pk]},
+            {"name": "乙组", "members": [self.root.pk]},
         )
         self.assertEqual(response.status_code, 302)
         self.assertTrue(group.user_set.filter(pk=self.root.pk).exists())
 
     def test_group_admin_keeps_inactive_members(self):
-        group = Group.objects.create(name="课题组")
+        group = Group.objects.create(name="乙组")
         inactive = User.objects.create_user("gone", password="x", is_active=False)
         group.user_set.add(inactive)
         response = self.client.get(f"/admin/auth/group/{group.pk}/change/")
         self.assertContains(response, f'value="{inactive.pk}" selected')
 
     def test_group_admin_sets_self_service(self):
-        group = Group.objects.create(name="课题组")
+        group = Group.objects.create(name="乙组")
         response = self.client.post(
             f"/admin/auth/group/{group.pk}/change/",
-            {"name": "课题组", "members": [], "self_service": "on"},
+            {"name": "乙组", "members": [], "self_service": "on"},
         )
         self.assertEqual(response.status_code, 302)
         self.assertTrue(GroupSettings.objects.get(group=group).self_service)
@@ -2697,13 +2697,13 @@ class ImportBatchCommandTests(SubmissionTestCase):
         self.assertIn("payment.jpg", out)
 
     def test_multiple_groups_require_group_argument(self):
-        Group.objects.create(name="课题组")
+        Group.objects.create(name="乙组")
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesMessage(CommandError, "--group"):
                 self.call(tmp)
 
     def test_group_argument_creates_batch_in_group(self):
-        group = Group.objects.create(name="课题组")
+        group = Group.objects.create(name="乙组")
         with tempfile.TemporaryDirectory() as tmp:
             self._write(tmp, "张三", ["invoice.jpg", "payment.jpg"])
             with mock.patch("core.vision.detect") as detect:
@@ -2712,10 +2712,10 @@ class ImportBatchCommandTests(SubmissionTestCase):
                     {"kind": "payment", "amount": 100, "order_no": ALIPAY_ORDER_NO},
                 ]
                 with mock.patch("core.vision.field_suggest", return_value={"suggestions": []}):
-                    out = self.call(tmp, "--batch", "导入测试批", "--group", "课题组")
+                    out = self.call(tmp, "--batch", "导入测试批", "--group", "乙组")
         batch = Batch.objects.get(name="导入测试批")
         self.assertEqual(batch.group, group)
-        self.assertIn("课题组", out)
+        self.assertIn("乙组", out)
 
     def test_dry_run_creates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

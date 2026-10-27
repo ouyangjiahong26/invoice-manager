@@ -1,7 +1,7 @@
 """报销批次与条目持久化顺序：新建 Batch；Item 挂批次（PROTECT）并加全局递增 position。
 
 迁移顺序关键：batch 先以 null=True 加入，把存量条目（生产仅 1 条测试数据）挂到
-自建的"历史条目"批次并给 position=1，最后收紧为非空。
+自建的"历史条目"批次并给 position=1，最后收紧为非空。无存量条目时跳过，不建空批次。
 """
 
 import django.db.models.deletion
@@ -11,6 +11,8 @@ from django.db import migrations, models
 def assign_default_batch(apps, schema_editor):
     Batch = apps.get_model("core", "Batch")
     Item = apps.get_model("core", "Item")
+    if not Item.objects.exists():
+        return
     batch = Batch.objects.create(name="历史条目")
     Item.objects.update(batch=batch, position=1)
 

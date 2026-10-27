@@ -1258,7 +1258,7 @@ def export_zip(request):
 
 
 def session_check(request):
-    """nginx auth_request 子请求（跨子域名共享 session，如 mineru.cislunarspace.cn）。
+    """nginx auth_request 子请求（跨子域名共享 session，如 mineru.example.com）。
 
     已登录返回 204，未登录返回 401。由边缘 nginx 将 401 重定向到统一登录页。
     """
