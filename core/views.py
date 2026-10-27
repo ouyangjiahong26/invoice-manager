@@ -216,11 +216,12 @@ def board(request):
     if query:
         rows = [row for row in rows if query in row["item"].title]
 
+    # 创建人仅自助组显示（区分成员各自的批次），普通组批次名保持原样
     batch_groups = [
-        (group, [batch for batch in batches if batch.group_id == group.pk])
+        (group, [batch for batch in batches if batch.group_id == group.pk], group_is_self_service(group))
         for group in groups
     ]
-    batch_groups = [(group, items) for group, items in batch_groups if items]
+    batch_groups = [(group, items, self_service) for group, items, self_service in batch_groups if items]
 
     return render(request, "core/board.html", {
         "batches": batches,
@@ -638,6 +639,7 @@ def batch_create(request):
         "groups": groups,
         "selected_group": selected,
         "target_batch": _submission_batch(request.user, selected) if selected else None,
+        "show_batch_creator": bool(selected and group_is_self_service(selected)),
         "self_service_selected": bool(
             selected and not request.user.is_staff and group_is_self_service(selected)
         ),

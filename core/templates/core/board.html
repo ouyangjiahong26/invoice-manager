@@ -91,10 +91,10 @@
   <div class="board-toolbar">
     <label class="toolbar-item">批次
       <select id="batch-select">
-        {% for group, group_batches in batch_groups %}
+        {% for group, group_batches, show_creator in batch_groups %}
           <optgroup label="{{ group.name }}">
             {% for b in group_batches %}
-              <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if b.created_by %} · {{ b.created_by.get_full_name|default:b.created_by.username }}{% endif %}{% if b.archived %}（已存档）{% endif %}</option>
+              <option value="{{ b.pk }}" {% if current_batch.pk == b.pk %}selected{% endif %}>{{ b.name }}{% if show_creator and b.created_by %} · {{ b.created_by.get_full_name|default:b.created_by.username }}{% endif %}{% if b.archived %}（已存档）{% endif %}</option>
             {% endfor %}
           </optgroup>
         {% endfor %}
