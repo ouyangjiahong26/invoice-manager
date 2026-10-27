@@ -1,4 +1,5 @@
 import json
+import re
 import zipfile
 from decimal import Decimal
 from io import BytesIO
@@ -15,6 +16,8 @@ from django.db import transaction
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
+from django.utils.http import content_disposition_header
 from django.views.decorators.http import require_POST
 
 from openpyxl import Workbook
@@ -1136,25 +1139,28 @@ def _approved_by_category(batch):
     ]
 
 
-def _download_filename(prefix, batch, extension):
-    """组名与批次名只去除会破坏 Content-Disposition 的字符（引号/换行），中文原样保留。"""
+def _download_filename(batch, stamp, extension):
+    """批次名+时间戳。content_disposition_header 按 RFC 6266 生成头，中文走
+    filename*=utf-8'' 百分号编码，浏览器才能显示（直接写中文会被按 RFC 2047
+    编码，浏览器不认，回退用 URL 推断出 index.zip）。"""
+    name = batch.name if batch is not None else "导出"
+    return content_disposition_header(True, f"{name}_{stamp}.{extension}")
 
-    def clean(value):
-        return value.replace('"', "").replace("\r", "").replace("\n", "")
 
-    parts = [prefix]
-    if batch is not None:
-        parts.extend([clean(batch.group.name), clean(batch.name)])
-    stem = "_".join(part for part in parts if part)
-    return f'attachment; filename="{stem}.{extension}"'
+def _sheet_title(batch, stamp):
+    """sheet 标签：批次名去掉 openpyxl 禁用字符（\\ * ? : / [ ] 会抛 ValueError），
+    截 17 字符以保时间戳完整，总长恰为标签上限 31 字符。"""
+    name = batch.name if batch is not None else "导出"
+    return f"{re.sub(r'[\\*?:/\[\]]', ' ', name)[:17]}_{stamp}"
 
 
 @user_passes_test(_staff)
 def export_excel(request):
     batch = _current_batch(request)
+    stamp = timezone.localtime().strftime("%Y%m%d-%H%M")
     wb = Workbook()
     ws = wb.active
-    ws.title = "报销明细"
+    ws.title = _sheet_title(batch, stamp)
     header = ["序号", "明细", "类别", "实付款", "付款人", "支付记录", "票据"]
     ws.append(header)
     for cell in ws[1]:
@@ -1211,13 +1217,14 @@ def export_excel(request):
         buffer.getvalue(),
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    response["Content-Disposition"] = _download_filename("报销汇总", batch, "xlsx")
+    response["Content-Disposition"] = _download_filename(batch, stamp, "xlsx")
     return response
 
 
 @user_passes_test(_staff)
 def export_zip(request):
     batch = _current_batch(request)
+    stamp = timezone.localtime().strftime("%Y%m%d-%H%M")
     buffer = BytesIO()
     seen = set()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1253,7 +1260,7 @@ def export_zip(request):
                     seen.add(name)
                     zf.writestr(name, data)
     response = HttpResponse(buffer.getvalue(), content_type="application/zip")
-    response["Content-Disposition"] = _download_filename("报销材料", batch, "zip")
+    response["Content-Disposition"] = _download_filename(batch, stamp, "zip")
     return response
 
 
