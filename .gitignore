@@ -6,3 +6,4 @@ staticfiles/
 __pycache__/
 *.pyc
 *.log
+.zcode/
