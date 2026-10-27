@@ -45,7 +45,7 @@
     <div class="helptext">提交到所选组的最新批次，开启成员自助建的组提交到自己创建的批次。</div>
     {% endif %}
     {% if target_batch %}
-    <div class="helptext">提交到批次：{{ target_batch.name }}{% if target_batch.created_by %} · {{ target_batch.created_by.get_full_name|default:target_batch.created_by.username }}{% endif %}</div>
+    <div class="helptext">提交到批次：{{ target_batch.name }}{% if show_batch_creator and target_batch.created_by %} · {{ target_batch.created_by.get_full_name|default:target_batch.created_by.username }}{% endif %}</div>
     {% elif self_service_selected %}
     <div class="ai-summary warn">你还没有自己的批次，请先创建批次。</div>
     {% else %}

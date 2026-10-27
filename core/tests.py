@@ -2323,6 +2323,36 @@ class SelfServiceBatchTests(SubmissionTestCase):
         response = self.client.get("/items/batch/")
         self.assertContains(response, f"提交到批次：{own.name}")
 
+    def test_board_shows_batch_creator_in_self_service_group(self):
+        self._create_batch(self.member, "甲批次")
+        self._create_batch(self.member_b, "乙批次")
+        self.client.force_login(self.member)
+        response = self.client.get("/")
+        self.assertContains(response, "甲批次 · 成员甲")
+        self.assertContains(response, "乙批次 · 成员乙")
+
+    def test_batch_page_shows_batch_creator_in_self_service_group(self):
+        own = self._create_batch(self.member, "我的批次")
+        self.client.force_login(self.member)
+        response = self.client.get("/items/batch/")
+        self.assertContains(response, f"提交到批次：{own.name} · 成员甲")
+
+    def test_board_hides_batch_creator_in_normal_group(self):
+        batch = Batch.objects.create(
+            name="20261027", group=self.group, created_by=self.staff)
+        self.client.force_login(self.staff)
+        response = self.client.get("/", {"batch": batch.pk})
+        self.assertContains(response, "20261027")
+        self.assertNotContains(response, "20261027 · 管理员")
+
+    def test_batch_page_hides_batch_creator_in_normal_group(self):
+        batch = Batch.objects.create(
+            name="20261028", group=self.group, created_by=self.staff)
+        self.client.force_login(self.staff)
+        response = self.client.get("/items/batch/")
+        self.assertContains(response, f"提交到批次：{batch.name}")
+        self.assertNotContains(response, f"{batch.name} · 管理员")
+
     def test_batch_page_warns_without_own_batch(self):
         self._create_batch(self.member_b, "别人的批次")
         self.client.force_login(self.member)
