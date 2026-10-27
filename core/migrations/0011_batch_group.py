@@ -2,13 +2,17 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
-def seed_experiment_group(apps, schema_editor):
-    """历史数据归入实验班：现有批次与账号都迁进去，之后由管理员另建课题组。"""
+def seed_default_group(apps, schema_editor):
+    """把历史数据归入默认组。全新部署（无账号也无无组批次）不预置组，由管理员自建。"""
     Group = apps.get_model("auth", "Group")
     User = apps.get_model("auth", "User")
     Batch = apps.get_model("core", "Batch")
 
-    group, _ = Group.objects.get_or_create(name="实验班")
+    has_orphans = Batch.objects.filter(group__isnull=True).exists()
+    if not has_orphans and not User.objects.exists():
+        return
+
+    group, _ = Group.objects.get_or_create(name="默认组")
     Batch.objects.filter(group__isnull=True).update(group=group)
 
     UserGroup = User.groups.through
@@ -44,7 +48,7 @@ class Migration(migrations.Migration):
                 verbose_name="组",
             ),
         ),
-        migrations.RunPython(seed_experiment_group, migrations.RunPython.noop),
+        migrations.RunPython(seed_default_group, migrations.RunPython.noop),
         migrations.AlterField(
             model_name="batch",
             name="group",
