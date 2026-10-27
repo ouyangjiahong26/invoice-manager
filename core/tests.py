@@ -6,10 +6,10 @@ import tempfile
 import zipfile
 from decimal import Decimal
 from io import BytesIO, StringIO
-from email.header import decode_header
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+from urllib.parse import unquote
 
 from django.conf import settings
 from django.contrib import admin
@@ -45,11 +45,12 @@ def _png_upload(name):
 
 
 def _content_disposition(response):
-    """Django 把非 ASCII 响应头按 RFC 2047 编码，测试断言前先解码。"""
-    return "".join(
-        part.decode(charset or "utf-8")
-        for part, charset in decode_header(response["Content-Disposition"])
-    )
+    """文件名走 filename*=utf-8'' 百分号编码（RFC 6266），测试断言前先解码。"""
+    value = response["Content-Disposition"]
+    marker = "filename*=utf-8''"
+    if marker in value:
+        return unquote(value.split(marker, 1)[1])
+    return value
 
 
 def _item_data(**overrides):
@@ -283,6 +284,7 @@ class AttachmentSubmissionTests(SubmissionTestCase):
         self.client.force_login(self.staff)
         response = self.client.get("/export/excel/", {"batch": self.batch.pk})
         sheet = load_workbook(BytesIO(response.content)).active
+        self.assertRegex(sheet.title, r"^2025 报销批次_\d{8}-\d{4}$")
         self.assertEqual(
             [cell.value for cell in sheet[1]],
             ["序号", "明细", "类别", "实付款", "付款人", "支付记录", "票据"],
@@ -2085,7 +2087,8 @@ class ExportBatchTests(SubmissionTestCase):
         ))
         self.client.force_login(self.staff)
         response = self.client.get("/export/excel/", {"batch": self.batch.pk})
-        self.assertIn("报销汇总_甲组_2025 报销批次.xlsx", _content_disposition(response))
+        self.assertRegex(_content_disposition(response),
+                         r"^2025 报销批次_\d{8}-\d{4}\.xlsx$")
         sheet = load_workbook(BytesIO(response.content)).active
         titles = [sheet.cell(row=r, column=2).value for r in range(2, sheet.max_row + 1)]
         self.assertIn("硬盘", titles)
@@ -2106,7 +2109,26 @@ class ExportBatchTests(SubmissionTestCase):
                             status=Item.STATUS_APPROVED)
         self.client.force_login(self.staff)
         response = self.client.get("/export/zip/", {"batch": self.batch.pk})
-        self.assertIn("报销材料_甲组_2025 报销批次.zip", _content_disposition(response))
+        self.assertRegex(_content_disposition(response),
+                         r"^2025 报销批次_\d{8}-\d{4}\.zip$")
+
+    def test_sheet_title_sanitizes_invalid_characters(self):
+        # 批次名含 openpyxl 标签禁用字符 / 时替换为空格，导出不报错
+        self.batch.name = "2025/09 批次"
+        self.batch.save()
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/excel/", {"batch": self.batch.pk})
+        sheet = load_workbook(BytesIO(response.content)).active
+        self.assertRegex(sheet.title, r"^2025 09 批次_\d{8}-\d{4}$")
+
+    def test_sheet_title_truncates_long_batch_name(self):
+        self.batch.name = "超长批次名" * 20  # 100 字符（模型上限）
+        self.batch.save()
+        self.client.force_login(self.staff)
+        response = self.client.get("/export/excel/", {"batch": self.batch.pk})
+        sheet = load_workbook(BytesIO(response.content)).active
+        self.assertEqual(len(sheet.title), 31)
+        self.assertRegex(sheet.title, r"_\d{8}-\d{4}$")
 
     def test_excel_seq_follows_position(self):
         Item.objects.create(owner=self.student, title="后提交排前", category=self.category,
