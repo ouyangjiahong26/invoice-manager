@@ -24,8 +24,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from . import pairing, staging, stamping, vision
-from .access import (accessible_groups, can_access_group, can_create_batch, can_edit_item,
-                     can_review_batch, can_review_item, can_view_item, group_is_self_service)
+from .access import (MAX_BATCHES_PER_USER, accessible_groups, batch_quota_reached,
+                     can_access_group, can_create_batch, can_edit_item, can_review_batch,
+                     can_review_item, can_view_item, group_is_self_service)
 from .attachments import (KIND_LABELS, attachment_groups, build_attachment, category_help_text,
                          decimal_or_none, ocr_value, plan_decimal)
 from .audit import attachment_entries, attachment_entry, mark_attachments, mark_comment
@@ -531,6 +532,11 @@ def item_delete(request, pk):
     return redirect("board")
 
 
+def _batch_quota_message(user):
+    tail = "请删除旧批次后再试" if user.is_staff else "请联系管理员清理旧批次"
+    return f"你创建的批次已达上限（{MAX_BATCHES_PER_USER} 个），{tail}。"
+
+
 @login_required
 @require_POST
 def batch_add(request):
@@ -547,7 +553,11 @@ def batch_add(request):
     if Batch.objects.filter(group=group, name=name).exists():
         messages.error(request, f"组 {group.name} 下批次 {name} 已存在")
         return redirect("board")
-    batch = Batch.objects.create(name=name, group=group, created_by=request.user)
+    with transaction.atomic():
+        if batch_quota_reached(request.user):
+            messages.error(request, _batch_quota_message(request.user))
+            return redirect("board")
+        batch = Batch.objects.create(name=name, group=group, created_by=request.user)
     messages.success(request, f"已为组 {group.name} 创建批次 {name}")
     return redirect(f"{reverse('board')}?batch={batch.pk}")
 

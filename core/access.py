@@ -1,6 +1,20 @@
 """组与数据可见范围：管理员看全部组，其他用户只看自己所属组。"""
 
-from django.contrib.auth.models import Group
+from django.contrib.auth.models import Group, User
+
+from .models import Batch
+
+MAX_BATCHES_PER_USER = 100
+
+
+def batch_quota_reached(user):
+    """用户创建的批次是否已达上限。
+
+    先锁定用户行再计数，调用方必须处于事务中。同一用户的并发建批请求因此
+    串行执行，计数不会都停在创建之前。
+    """
+    User.objects.select_for_update().get(pk=user.pk)
+    return Batch.objects.filter(created_by=user).count() >= MAX_BATCHES_PER_USER
 
 
 def accessible_groups(user):
