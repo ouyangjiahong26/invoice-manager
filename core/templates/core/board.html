@@ -26,7 +26,7 @@
         </form>
       {% endif %}
       {% if not current_batch.archived and can_submit_current %}
-      <button type="button" id="new-item-btn" data-group="{{ current_batch.group_id }}">新建条目</button>
+      <button type="button" id="new-item-btn" data-group="{{ current_batch.group_id }}" data-batch="{{ current_batch.pk }}">新建条目</button>
       {% endif %}
     </div>
   {% endif %}
@@ -42,7 +42,7 @@
   <div class="card empty-state">
     {% if creatable_groups %}
       <div class="empty-title">还没有报销批次</div>
-      <p>{% if user.is_staff %}选择组并创建第一个批次，学生提交的条目会自动归入本组最新批次。{% else %}先创建自己的批次，再提交条目。{% endif %}</p>
+      <p>{% if user.is_staff %}选择组并创建第一个批次，学生提交时可选择本组的未存档批次。{% else %}先创建自己的批次，再提交条目。{% endif %}</p>
       <form method="post" action="{% url 'batch_add' %}" class="stack">
         {% csrf_token %}
         <label for="new-batch-group">组</label>
@@ -400,7 +400,8 @@
   }, {passive: true});
   var newBtn = document.getElementById("new-item-btn");
   if (newBtn) newBtn.addEventListener("click", function () {
-    openPanel("{% url 'item_create' %}?group=" + encodeURIComponent(newBtn.dataset.group || ""));
+    openPanel("{% url 'item_create' %}?group=" + encodeURIComponent(newBtn.dataset.group || "")
+      + "&batch=" + encodeURIComponent(newBtn.dataset.batch || ""));
   });
 
   /* ---------- 表格行交互：开侧边栏 / 删除 ---------- */
@@ -772,6 +773,14 @@
 
     var itemForm = PANEL.querySelector("#panel-form");
     if (!itemForm) return;
+    var batchField = itemForm.querySelector('[name="batch"]');
+    var groupField = itemForm.querySelector('[name="group"]');
+    if (batchField && groupField) {
+      // 换组后目标批次随组变化，重新打开面板取该组的缺省批次
+      groupField.addEventListener("change", function () {
+        openPanel("{% url 'item_create' %}?group=" + encodeURIComponent(groupField.value));
+      });
+    }
     manualMatch = false;
     draftWarnings = [];
     lastDraftPayload = null;

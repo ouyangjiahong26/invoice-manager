@@ -2,6 +2,7 @@
 <div class="panel-head">
   <b>提交报销条目</b>
   <button type="button" class="secondary small panel-close">关闭</button>
+  <span class="meta">{{ target_batch.group.name }} · {{ target_batch.name }}</span>
 </div>
 {% else %}
 <div class="panel-head">
@@ -45,6 +46,7 @@
 <div class="ai-summary" id="panel-ai-summary">尚未上传附件</div>
 <form class="stack" id="panel-form" method="post" enctype="multipart/form-data" action="{% if is_create %}{% url 'item_create' %}{% else %}{% url 'item_update' item.pk %}{% endif %}">
   {% csrf_token %}
+  {% if is_create %}<input type="hidden" name="batch" value="{{ target_batch.pk }}">{% endif %}
   {{ form.non_field_errors }}
 
   <div class="panel-section">
@@ -112,6 +114,18 @@
     </table>
   </div>
 </div>
+{% endif %}
+
+{% if is_create and not is_fetch %}
+<script>
+(function () {
+  // 直接打开整页时也支持换组：重新加载并取新组的缺省批次
+  var group = document.querySelector("#panel-form [name=group]");
+  if (group) group.addEventListener("change", function () {
+    window.location.href = "{% url 'item_create' %}?group=" + encodeURIComponent(group.value);
+  });
+})();
+</script>
 {% endif %}
 
 {% if not is_create %}
