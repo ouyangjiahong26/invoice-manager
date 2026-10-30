@@ -36,7 +36,8 @@ class ItemPanelForm(forms.ModelForm):
                     pk__in=[group.pk for group in groups]
                 ).order_by("id"),
                 label="组",
-                help_text="条目提交到该组的最新批次，开启成员自助建的组提交到自己创建的批次",
+                help_text="条目提交到所选未存档批次，缺省取最近创建的未存档批次。"
+                          "开启成员自助的组，非管理员成员只能提交到自己创建的批次",
             )
         if not staff:
             del self.fields["status"]

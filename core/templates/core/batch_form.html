@@ -42,14 +42,20 @@
         <option value="{{ group.pk }}" {% if selected_group.pk == group.pk %}selected{% endif %}>{{ group.name }}</option>
       {% endfor %}
     </select>
-    <div class="helptext">提交到所选组的最新批次，开启成员自助建的组提交到自己创建的批次。</div>
+    <div class="helptext">提交到下方所选批次，缺省取最近创建的未存档批次。</div>
     {% endif %}
     {% if target_batch %}
-    <div class="helptext">提交到批次：{{ target_batch.name }}{% if show_batch_creator and target_batch.created_by %} · {{ target_batch.created_by.get_full_name|default:target_batch.created_by.username }}{% endif %}</div>
+    <label for="batch-target" class="field-label">批次</label>
+    <select id="batch-target">
+      {% for batch in batch_choices %}
+        <option value="{{ batch.pk }}" {% if target_batch.pk == batch.pk %}selected{% endif %}>{{ batch.name }}{% if show_batch_creator and batch.created_by %} · {{ batch.created_by.get_full_name|default:batch.created_by.username }}{% endif %}</option>
+      {% endfor %}
+    </select>
+    <div class="helptext">只列出可提交的未存档批次，默认最近创建的批次。</div>
     {% elif self_service_selected %}
     <div class="ai-summary warn">你还没有自己的批次，请先创建批次。</div>
     {% else %}
-    <div class="ai-summary warn">该组还没有批次，请先创建批次。</div>
+    <div class="ai-summary warn">{% if user.is_staff %}该组没有可提交的未存档批次，请先创建批次。{% else %}该组没有可提交的未存档批次，请联系管理员创建批次。{% endif %}</div>
     {% endif %}
     {% if target_batch %}
     {% if vision_configured %}
@@ -94,7 +100,7 @@
       </div>
     </div>
     {% else %}
-    <div class="ai-summary warn">未配置识别服务，请使用<a href="{% url 'item_create' %}?group={{ selected_group.pk }}">单条提交</a>。</div>
+    <div class="ai-summary warn">未配置识别服务，请使用<a id="single-submit-link" href="{% url 'item_create' %}?group={{ selected_group.pk }}&batch={{ target_batch.pk }}">单条提交</a>。</div>
     {% endif %}
     {% endif %}
   </div>
@@ -136,6 +142,19 @@
 
 <script>
 (function () {
+  var groupSelect = document.getElementById("batch-group");
+  if (groupSelect) groupSelect.addEventListener("change", function () {
+    window.location.href = "{% url 'batch_create' %}?group=" + encodeURIComponent(groupSelect.value);
+  });
+  var batchTarget = document.getElementById("batch-target");
+  var singleSubmitLink = document.getElementById("single-submit-link");
+  if (batchTarget && singleSubmitLink) {
+    batchTarget.addEventListener("change", function () {
+      singleSubmitLink.href = "{% url 'item_create' %}?group="
+        + encodeURIComponent(groupSelect ? groupSelect.value : "{{ selected_group.pk }}")
+        + "&batch=" + encodeURIComponent(batchTarget.value);
+    });
+  }
   var uploadInput = document.getElementById("batch-upload");
   if (!uploadInput) return;  // 未配置识别服务时不初始化
   var KIND_LABELS = {invoice: "发票", payment: "支付记录", refund: "退款记录", support: "证明材料", unknown: "未识别"};
@@ -177,6 +196,10 @@
   function selectedGroupId() {
     var select = document.getElementById("batch-group");
     return select ? select.value : GROUP_ID;
+  }
+  function selectedBatchId() {
+    var select = document.getElementById("batch-target");
+    return select ? select.value : "";
   }
   var categories = JSON.parse(document.getElementById("categories-data").textContent);
   var MAX_FILES = {{ max_files }};
@@ -1071,12 +1094,16 @@
       credentials: "same-origin",
       redirect: "manual",
       headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"},
-      body: JSON.stringify({session_id: sessionId, groups: planGroups, group: selectedGroupId()})
+      body: JSON.stringify({session_id: sessionId, groups: planGroups, group: selectedGroupId(),
+                            batch: selectedBatchId()})
     })
       .then(function (resp) {
         // 成功后 302 跳到看板：manual 不跟随跳转，保住 messages 只在落地页渲染一次
         if (resp.type === "opaqueredirect") {
-          window.location.href = boardUrl;
+          var target = selectedBatchId();
+          window.location.href = target
+            ? boardUrl + "?batch=" + encodeURIComponent(target)
+            : boardUrl;
           return null;
         }
         return resp.json().then(function (payload) { throw new Error(payload.error || "提交失败"); });

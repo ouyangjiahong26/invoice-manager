@@ -1723,7 +1723,7 @@ class GroupIsolationTests(SubmissionTestCase):
     def test_default_group_prefers_open_batch(self):
         from .views import _default_group
         empty = Group.objects.create(name="空组")
-        self.assertEqual(_default_group([empty, self.group]), self.group)
+        self.assertEqual(_default_group(self.student, [empty, self.group]), self.group)
 
     def test_removed_owner_keeps_read_but_loses_write(self):
         item = Item.objects.create(
@@ -2227,12 +2227,191 @@ class ArchivedBatchLockTests(SubmissionTestCase):
         self.assertIsNone(panel.context.get("form"))
         self.assertContains(panel, "已存档")
 
-    def test_create_rejected_when_latest_batch_archived(self):
+    def test_create_rejected_when_all_batches_archived(self):
         Batch.objects.all().update(archived=True)
         self.client.force_login(self.student)
-        response = self.client.post("/items/new/", _item_data(category=self.category.pk))
+        response = self.client.post(
+            "/items/new/", _item_data(category=self.category.pk), follow=True)
         self.assertRedirects(response, "/")
+        self.assertContains(response, "未存档")
         self.assertEqual(Item.objects.count(), 1)  # 仅剩 setUp 的存档条目，未新建
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT, DEEPSEEK_API_KEY="")
+class BatchSelectionTests(SubmissionTestCase):
+    """提交批次选择：显式批次、缺省未存档、看板排序与批量页选项。"""
+
+    def setUp(self):
+        super().setUp()
+        # 最新批次已存档，旧批次仍开放：缺省应落在旧批次
+        self.archived = Batch.objects.create(
+            name="已存档批次", group=self.group, archived=True)
+
+    def test_board_defaults_to_latest_unarchived_and_lists_it_first(self):
+        newer = Batch.objects.create(name="新未存档批次", group=self.group)
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertEqual(response.context["current_batch"], newer)
+        group_batches = next(
+            items for group, items, _ in response.context["batch_groups"]
+            if group == self.group
+        )
+        self.assertEqual(group_batches, [newer, self.batch, self.archived])
+        self.assertContains(
+            response,
+            f'id="new-item-btn" data-group="{self.group.pk}" data-batch="{newer.pk}"',
+        )
+
+    def test_item_create_follows_requested_batch_and_shows_target(self):
+        Batch.objects.create(name="新未存档批次", group=self.group)
+        self.client.force_login(self.student)
+        response = self.client.get(
+            "/items/new/",
+            {"group": self.group.pk, "batch": self.batch.pk},
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'name="batch" value="{self.batch.pk}"')
+        self.assertContains(response, self.batch.name)
+
+        response = self.client.post(
+            "/items/new/",
+            _item_data(category=self.category.pk, batch=self.batch.pk),
+        )
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, self.batch)
+
+    def test_item_create_without_batch_uses_latest_unarchived(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/new/", _item_data(category=self.category.pk))
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, self.batch)
+
+    def test_item_create_default_picks_newest_unarchived_batch(self):
+        newer = Batch.objects.create(name="新未存档批次", group=self.group)
+        Batch.objects.create(name="更新已存档批次", group=self.group, archived=True)
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/new/", _item_data(category=self.category.pk))
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, newer)
+
+    def test_item_create_rejects_archived_batch(self):
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/new/",
+            _item_data(category=self.category.pk, batch=self.archived.pk),
+            follow=True,
+        )
+        self.assertRedirects(response, "/")
+        self.assertContains(response, "已存档")
+        self.assertFalse(Item.objects.exists())
+
+    def test_item_create_rejects_other_group_batch(self):
+        other_group = Group.objects.create(name="丙组")
+        other_batch = Batch.objects.create(name="丙组批次", group=other_group)
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/new/",
+            _item_data(category=self.category.pk, batch=other_batch.pk),
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Item.objects.exists())
+
+    def test_all_batches_archived_blocks_submission(self):
+        Batch.objects.all().update(archived=True)
+        self.client.force_login(self.student)
+        response = self.client.get("/")
+        self.assertEqual(response.context["current_batch"], self.archived)
+        self.assertNotContains(response, 'id="new-item-btn"')
+
+        response = self.client.get(
+            "/items/new/", HTTP_X_REQUESTED_WITH="fetch")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("未存档", response.json()["error"])
+        self.assertIn("联系管理员", response.json()["error"])
+
+    def test_batch_page_warns_student_to_contact_admin(self):
+        Batch.objects.all().update(archived=True)
+        self.client.force_login(self.student)
+        response = self.client.get("/items/batch/")
+        self.assertContains(response, "没有可提交的未存档批次")
+        self.assertContains(response, "联系管理员")
+
+    def test_batch_page_lists_selectable_batches_and_defaults_latest_unarchived(self):
+        newer = Batch.objects.create(name="新未存档批次", group=self.group)
+        self.client.force_login(self.student)
+        response = self.client.get("/items/batch/")
+        self.assertEqual(response.context["target_batch"], newer)
+        self.assertEqual(list(response.context["batch_choices"]), [newer, self.batch])
+        self.assertContains(response, 'id="batch-target"')
+        self.assertContains(response, self.batch.name)
+        self.assertNotContains(response, self.archived.name)
+        self.assertContains(response, f"batch={newer.pk}")
+
+    def test_batch_submit_uses_selected_batch(self):
+        newer = Batch.objects.create(name="新未存档批次", group=self.group)
+        session_id, file_ids = self._stage([
+            _png_upload("invoice.png"), _png_upload("payment.png")])
+        self.client.force_login(self.student)
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({
+                "session_id": session_id,
+                "group": self.group.pk,
+                "batch": self.batch.pk,
+                "groups": [{
+                    "title": "打印费", "category": self.category.pk,
+                    "actual_amount": "5.00", "invoice_amount": "5.00",
+                    "files": [
+                        {"file_id": file_ids[0], "kind": "invoice", "amount": "5.00"},
+                        {"file_id": file_ids[1], "kind": "payment", "amount": "5.00"},
+                    ],
+                }],
+            }),
+            content_type="application/json",
+        )
+        self.assertRedirects(response, "/")
+        item = Item.objects.latest("id")
+        self.assertEqual(item.batch, self.batch)
+        self.assertNotEqual(item.batch, newer)
+
+    def test_batch_submit_rejects_archived_and_other_group_batch(self):
+        other_group = Group.objects.create(name="丙组")
+        other_batch = Batch.objects.create(name="丙组批次", group=other_group)
+        session_id, file_ids = self._stage([
+            _png_upload("invoice.png"), _png_upload("payment.png")])
+        self.client.force_login(self.student)
+        payload = {
+            "session_id": session_id,
+            "group": self.group.pk,
+            "groups": [{
+                "title": "打印费", "category": self.category.pk,
+                "actual_amount": "5.00", "invoice_amount": "5.00",
+                "files": [
+                    {"file_id": file_ids[0], "kind": "invoice", "amount": "5.00"},
+                    {"file_id": file_ids[1], "kind": "payment", "amount": "5.00"},
+                ],
+            }],
+        }
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({**payload, "batch": self.archived.pk}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("已存档", response.json()["error"])
+        self.assertFalse(Item.objects.exists())
+
+        response = self.client.post(
+            "/items/batch/submit/",
+            json.dumps({**payload, "batch": other_batch.pk}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("无权", response.json()["error"])
+        self.assertFalse(Item.objects.exists())
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
@@ -2330,6 +2509,68 @@ class SelfServiceBatchTests(SubmissionTestCase):
         self.assertRedirects(response, "/")
         self.assertEqual(Item.objects.latest("id").batch, own)
 
+    def test_member_batch_choices_only_own_unarchived(self):
+        own_old = self._create_batch(self.member, "我的旧批次")
+        own_new = self._create_batch(self.member, "我的新批次")
+        self._create_batch(self.member_b, "别人的批次")
+        Batch.objects.filter(pk=own_old.pk).update(archived=True)
+        self.client.force_login(self.member)
+        response = self.client.get("/items/batch/", {"group": self.self_group.pk})
+        self.assertEqual([b.pk for b in response.context["batch_choices"]], [own_new.pk])
+        self.assertEqual(response.context["target_batch"], own_new)
+
+    def test_member_default_skips_archived_own_batch(self):
+        own_old = self._create_batch(self.member, "我的旧批次")
+        own_new = self._create_batch(self.member, "我的新批次")
+        Batch.objects.filter(pk=own_new.pk).update(archived=True)
+        self.client.force_login(self.member)
+        response = self.client.post(
+            "/items/new/", _item_data(category=self.category.pk))
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, own_old)
+
+    def test_member_cannot_submit_to_other_or_archived_batch(self):
+        self._create_batch(self.member, "我的批次")
+        other = self._create_batch(self.member_b, "别人的批次")
+        archived = self._create_batch(self.member, "我的存档批次")
+        Batch.objects.filter(pk=archived.pk).update(archived=True)
+        self.client.force_login(self.member)
+        response = self.client.post(
+            "/items/new/",
+            _item_data(category=self.category.pk, batch=other.pk))
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Item.objects.exists())
+        response = self.client.post(
+            "/items/new/",
+            _item_data(category=self.category.pk, batch=archived.pk),
+            follow=True,
+        )
+        self.assertRedirects(response, "/")
+        self.assertContains(response, "已存档")
+        self.assertFalse(Item.objects.exists())
+
+    def test_staff_can_select_any_unarchived_batch(self):
+        own = self._create_batch(self.member, "成员批次")
+        other = self._create_batch(self.member_b, "他人批次")
+        self.client.force_login(self.staff)
+        response = self.client.get("/items/batch/", {"group": self.self_group.pk})
+        self.assertEqual(
+            {b.pk for b in response.context["batch_choices"]},
+            {own.pk, other.pk},
+        )
+        response = self.client.post(
+            "/items/new/",
+            _item_data(
+                category=self.category.pk,
+                group=self.self_group.pk,
+                batch=own.pk,
+                owner=self.staff.pk,
+                status=Item.STATUS_PENDING,
+            ),
+        )
+        self.assertRedirects(response, "/")
+        self.assertEqual(Item.objects.latest("id").batch, own)
+
     def test_item_without_own_batch_rejected(self):
         self._create_batch(self.member_b, "别人的批次")
         self.client.force_login(self.member)
@@ -2346,7 +2587,9 @@ class SelfServiceBatchTests(SubmissionTestCase):
         own = self._create_batch(self.member, "我的批次")
         self.client.force_login(self.member)
         response = self.client.get("/items/batch/")
-        self.assertContains(response, f"提交到批次：{own.name}")
+        self.assertEqual(response.context["target_batch"], own)
+        self.assertContains(response, 'id="batch-target"')
+        self.assertContains(response, own.name)
 
     def test_board_shows_batch_creator_in_self_service_group(self):
         self._create_batch(self.member, "甲批次")
@@ -2360,7 +2603,7 @@ class SelfServiceBatchTests(SubmissionTestCase):
         own = self._create_batch(self.member, "我的批次")
         self.client.force_login(self.member)
         response = self.client.get("/items/batch/")
-        self.assertContains(response, f"提交到批次：{own.name} · 成员甲")
+        self.assertContains(response, f"{own.name} · 成员甲")
 
     def test_board_hides_batch_creator_in_normal_group(self):
         batch = Batch.objects.create(
@@ -2375,7 +2618,7 @@ class SelfServiceBatchTests(SubmissionTestCase):
             name="20261028", group=self.group, created_by=self.staff)
         self.client.force_login(self.staff)
         response = self.client.get("/items/batch/")
-        self.assertContains(response, f"提交到批次：{batch.name}")
+        self.assertContains(response, batch.name)
         self.assertNotContains(response, f"{batch.name} · 管理员")
 
     def test_batch_page_warns_without_own_batch(self):
