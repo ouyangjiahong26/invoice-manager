@@ -7,6 +7,7 @@ import zipfile
 from decimal import Decimal
 from io import BytesIO, StringIO
 from pathlib import Path
+from threading import Barrier, Thread
 from types import SimpleNamespace
 from unittest import mock
 from urllib.parse import unquote
@@ -18,8 +19,9 @@ from django.contrib.messages.storage.cookie import CookieStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import IntegrityError, transaction
-from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.db import IntegrityError, connections, transaction
+from django.test import (RequestFactory, SimpleTestCase, TestCase, TransactionTestCase,
+                         override_settings, skipUnlessDBFeature)
 from django.utils import timezone
 
 from openpyxl import load_workbook
@@ -27,6 +29,7 @@ from openpyxl import load_workbook
 import pymupdf
 
 from . import pairing, staging, stamping, vision
+from .access import MAX_BATCHES_PER_USER, batch_quota_reached
 from .audit import ActorMiddleware
 from .models import Attachment, AuditLog, Batch, Category, GroupSettings, Item
 from .validation import check_item
@@ -2514,6 +2517,208 @@ class SelfServiceBatchTests(SubmissionTestCase):
         self.client.force_login(self.member_b)
         response = self.client.get("/", {"batch": batch.pk})
         self.assertNotContains(response, "cell-status editable")
+
+
+class BatchQuotaTests(SubmissionTestCase):
+    """每用户建批上限：99 可建，100 拒绝，存档计入，删除释放，用户隔离，后台同规则。"""
+
+    def setUp(self):
+        super().setUp()
+        self.root = User.objects.create_superuser("root", "root@example.com", "pw")
+        self.self_group = Group.objects.create(name="自助组")
+        GroupSettings.objects.create(group=self.self_group, self_service=True)
+        self.member = User.objects.create_user("member", password="pw", first_name="成员甲")
+        self.self_group.user_set.add(self.member)
+
+    def _fill(self, user, count=MAX_BATCHES_PER_USER, *, prefix=None,
+              group=None, archived=False):
+        prefix = prefix or (user.username if user else "历史")
+        group = group or self.group
+        Batch.objects.bulk_create([
+            Batch(name=f"{prefix}-{i}", group=group, created_by=user,
+                  archived=archived)
+            for i in range(count)
+        ])
+
+    def _post_add(self, user, name="新批次", group=None, *, follow=True):
+        self.client.force_login(user)
+        return self.client.post(
+            "/batches/add/",
+            {"name": name, "group": (group or self.group).pk},
+            follow=follow,
+        )
+
+    def _admin_add(self, name="后台批次", *, group=None, created_by=None):
+        self.client.force_login(self.root)
+        data = {"name": name, "group": (group or self.group).pk}
+        if created_by is not None:
+            data["created_by"] = created_by.pk
+        return self.client.post("/admin/core/batch/add/", data)
+
+    def test_hundredth_batch_allowed(self):
+        self._fill(self.staff, MAX_BATCHES_PER_USER - 1)
+        response = self._post_add(self.staff, "第 100 批", follow=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            Batch.objects.filter(created_by=self.staff).count(),
+            MAX_BATCHES_PER_USER,
+        )
+
+    def test_batch_beyond_limit_rejected(self):
+        self._fill(self.staff, MAX_BATCHES_PER_USER)
+        before = Batch.objects.count()
+        response = self._post_add(self.staff, "超限批次")
+        self.assertContains(response, "上限")
+        self.assertContains(response, "删除旧批次")
+        self.assertFalse(Batch.objects.filter(name="超限批次").exists())
+        self.assertEqual(Batch.objects.count(), before)
+
+    def test_archived_batches_count_toward_limit(self):
+        self._fill(self.staff, MAX_BATCHES_PER_USER - 1)
+        Batch.objects.create(
+            name="staff-已存档", group=self.group, created_by=self.staff,
+            archived=True,
+        )
+        response = self._post_add(self.staff, "归档后新批")
+        self.assertContains(response, "上限")
+        self.assertFalse(Batch.objects.filter(name="归档后新批").exists())
+
+    def test_deleting_batch_frees_slot(self):
+        self._fill(self.staff, MAX_BATCHES_PER_USER)
+        Batch.objects.filter(created_by=self.staff).first().delete()
+        response = self._post_add(self.staff, "删除后新批", follow=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Batch.objects.filter(name="删除后新批").exists())
+        self.assertEqual(
+            Batch.objects.filter(created_by=self.staff).count(),
+            MAX_BATCHES_PER_USER,
+        )
+
+    def test_limit_is_per_user(self):
+        self._fill(self.staff, MAX_BATCHES_PER_USER)
+        response = self._post_add(
+            self.member, "成员批次", group=self.self_group, follow=False
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            Batch.objects.filter(name="成员批次", created_by=self.member).exists()
+        )
+
+    def test_self_service_member_told_to_contact_admin(self):
+        self._fill(
+            self.member, MAX_BATCHES_PER_USER, group=self.self_group,
+            prefix="member",
+        )
+        response = self._post_add(
+            self.member, "成员超限", group=self.self_group
+        )
+        self.assertContains(response, "上限")
+        self.assertContains(response, "联系管理员")
+        self.assertFalse(Batch.objects.filter(name="成员超限").exists())
+
+    def test_batches_without_creator_do_not_count(self):
+        self._fill(None, MAX_BATCHES_PER_USER, prefix="历史")
+        response = self._post_add(self.staff, "历史之后的新批", follow=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Batch.objects.filter(name="历史之后的新批").exists())
+
+    def test_admin_add_beyond_limit_rejected(self):
+        self._fill(self.root, MAX_BATCHES_PER_USER)
+        before = Batch.objects.count()
+        response = self._admin_add("后台超限")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "上限")
+        self.assertFalse(Batch.objects.filter(name="后台超限").exists())
+        self.assertEqual(Batch.objects.count(), before)
+
+    def test_admin_add_blank_creator_becomes_operator(self):
+        self._fill(self.root, MAX_BATCHES_PER_USER - 1)
+        response = self._admin_add("后台新批")
+        self.assertEqual(response.status_code, 302)
+        batch = Batch.objects.get(name="后台新批")
+        self.assertEqual(batch.created_by, self.root)
+        self.assertEqual(
+            Batch.objects.filter(created_by=self.root).count(),
+            MAX_BATCHES_PER_USER,
+        )
+
+    def test_admin_add_checks_explicit_creator(self):
+        self._fill(self.student, MAX_BATCHES_PER_USER, prefix="student")
+        response = self._admin_add("替学生建批", created_by=self.student)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "上限")
+        self.assertFalse(Batch.objects.filter(name="替学生建批").exists())
+
+    def test_admin_add_allows_explicit_creator_under_limit(self):
+        self._fill(self.student, MAX_BATCHES_PER_USER - 1, prefix="student")
+        response = self._admin_add("替学生建批", created_by=self.student)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            Batch.objects.get(name="替学生建批").created_by, self.student
+        )
+
+    def test_admin_change_not_blocked_at_limit(self):
+        self._fill(self.root, MAX_BATCHES_PER_USER)
+        batch = Batch.objects.filter(created_by=self.root).first()
+        self.client.force_login(self.root)
+        response = self.client.post(
+            f"/admin/core/batch/{batch.pk}/change/",
+            {
+                "name": batch.name,
+                "group": self.group.pk,
+                "created_by": self.root.pk,
+                "archived": "on",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        batch.refresh_from_db()
+        self.assertTrue(batch.archived)
+
+
+class BatchQuotaConcurrencyTests(TransactionTestCase):
+    """并发建批在 PostgreSQL 上由用户行锁串行化。"""
+
+    @skipUnlessDBFeature("has_select_for_update")
+    def test_concurrent_creation_stops_at_limit(self):
+        group = Group.objects.create(name="并发组")
+        user = User.objects.create_user("concurrent", password="pw")
+        Batch.objects.bulk_create([
+            Batch(name=f"concurrent-{i}", group=group, created_by=user)
+            for i in range(MAX_BATCHES_PER_USER - 1)
+        ])
+        barrier = Barrier(2)
+        results = []
+        errors = []
+
+        def create(index):
+            try:
+                barrier.wait(timeout=10)
+                with transaction.atomic():
+                    if batch_quota_reached(user):
+                        results.append((index, False))
+                        return
+                    Batch.objects.create(
+                        name=f"并发-{index}", group=group, created_by=user
+                    )
+                    results.append((index, True))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [Thread(target=create, args=(i,)) for i in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(created for _, created in results), 1)
+        self.assertEqual(
+            Batch.objects.filter(created_by=user).count(),
+            MAX_BATCHES_PER_USER,
+        )
 
 
 class AdminPagesTests(TestCase):

@@ -5,6 +5,7 @@ from django.contrib.auth.models import Group, User
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
 
+from .access import MAX_BATCHES_PER_USER, batch_quota_reached
 from .models import AuditLog, Batch, Category, GroupSettings, Item
 
 
@@ -195,13 +196,48 @@ class CategoryAdmin(admin.ModelAdmin):
     search_fields = ("name", "description")
 
 
+class BatchAdminForm(forms.ModelForm):
+    """后台新增批次时执行每用户建批上限校验。"""
+
+    current_user = None
+
+    class Meta:
+        model = Batch
+        fields = "__all__"
+
+    def clean(self):
+        cleaned = super().clean()
+        if not self.instance._state.adding:
+            return cleaned
+        if "group" not in cleaned or "created_by" not in cleaned:
+            return cleaned
+        creator = cleaned.get("created_by") or self.current_user
+        if creator is not None and batch_quota_reached(creator):
+            raise forms.ValidationError(
+                f"用户 {creator.get_username()} 创建的批次已达上限"
+                f"（{MAX_BATCHES_PER_USER} 个），请删除旧批次后再试。"
+            )
+        return cleaned
+
+
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
+    form = BatchAdminForm
     list_display = ("name", "group", "created_by", "created_at", "archived", "item_count")
     list_filter = ("group", "archived")
     list_editable = ("archived",)
     list_select_related = ("group", "created_by")
     search_fields = ("name", "created_by__username", "created_by__first_name")
+
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        form_class = super().get_form(request, obj, change=change, **kwargs)
+        form_class.current_user = request.user
+        return form_class
+
+    def save_model(self, request, obj, form, change):
+        if not change and obj.created_by_id is None:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
 
     @admin.display(description="条目数")
     def item_count(self, obj):
